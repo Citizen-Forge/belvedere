@@ -1,0 +1,24 @@
+# Production overlay for the Unraid box. Apply with BOTH files:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Mirrors the irl/job-tracker pattern: the app runs macvlan-attached on br0
+# with its own LAN IP, while staying on belvedere-net to reach neo4j by
+# service name. Macvlan can't publish host ports, so the published port is
+# reset and the app is reached at <br0 ip>:3000 directly (UI and API on the
+# same origin — no separate frontend container/IP).
+services:
+  neo4j:
+    ports: !reset [] # don't expose bolt/browser on the LAN
+    restart: unless-stopped
+
+  app:
+    ports: !reset [] # macvlan can't publish; reached at 192.168.250.235:3000
+    networks:
+      br0:
+        ipv4_address: 192.168.250.235
+    restart: unless-stopped
+
+networks:
+  br0:
+    external: true
+    name: br0

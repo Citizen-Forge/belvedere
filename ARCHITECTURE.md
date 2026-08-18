@@ -171,3 +171,38 @@ Not yet built: publishing a custom type back to a library source (still a manual
 workflow per belvedere-library's README) and any kind of view sharing/permissions — saved views
 are global to the install, not per-user, which is fine for a single-user instance and will need
 revisiting before multi-user support.
+
+## Deployment
+
+One container serves everything: `Dockerfile` is a three-stage build (compile the backend,
+`vite build` the frontend, then a slim runtime image with only production deps) that copies the
+frontend's build output to `/app/public` and serves it from the same Fastify instance as the API
+via `@fastify/static` (`server.ts`'s `staticDir` option) — same origin, no CORS setup needed in
+production, and only one IP/port to expose. `scripts/copy-assets.mjs` exists because `tsc` only
+emits `.ts → .js`; the `.cypher` schema files under `src/*/schema.cypher` need copying into `dist`
+separately, or the compiled app throws `ENOENT` on startup looking for them — this was caught
+building the image for the first real deployment, not by any test, since local dev always runs
+straight from `src/` via `tsx` and never exercises the compiled `dist/` layout.
+
+`docker-compose.yml` defines `neo4j` + `app` on a private `belvedere-net` bridge network (`app`
+reaches Neo4j at `bolt://neo4j:7687`, service-name DNS). `docker-compose.prod.yml` is a
+host-specific overlay: it macvlan-attaches `app` to an external `br0` network with a static LAN IP
+and resets its published port (Docker's macvlan driver can't publish ports — the app is reached
+directly at `<its IP>:3000` from any real device on that network, not the host, and not from
+another container on a different Docker network; only real devices on the physical LAN segment can
+reach a macvlan IP). Neo4j stays off `br0` entirely — it doesn't need a LAN IP, only `app` does.
+This mirrors the same pattern already used for this org's other Unraid-hosted apps.
+
+`neo4j`'s healthcheck (`wget --spider` against its HTTP port) plus `app`'s `depends_on: condition:
+service_healthy` avoid a real startup race that showed up on first deploy: without it, `app`
+crash-loops through a few `ECONNREFUSED`s before Neo4j finishes its cold JVM start, then recovers
+via `restart: unless-stopped` — functionally fine but noisy, and the healthcheck needs a
+`start_period` (30s) or Compose hard-fails the whole `up` instead of waiting through a slow cold
+start on modest hardware.
+
+Deploying to the Unraid box specifically: `tar`-over-SSH the repo (excluding `node_modules`/`dist`)
+to `/mnt/dockermain/appdata/belvedere`, write a `.env` there with a real
+`BELVEDERE_NEO4J_PASSWORD` (never the `belvedere-dev` default), then `docker compose -f
+docker-compose.yml -f docker-compose.prod.yml up -d --build`. Verify from an actual LAN device
+(this dev machine), never by curling from the Unraid host itself — the host can't reach its own
+macvlan children, which looks like a failed deploy but isn't.
