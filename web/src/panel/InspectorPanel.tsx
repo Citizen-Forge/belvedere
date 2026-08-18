@@ -3,9 +3,10 @@ import type { AssetNodeType } from "../graph/AssetNode";
 export interface InspectorPanelProps {
   node: AssetNodeType | undefined;
   onClose: () => void;
+  onAddHostedChild: (parent: { id: string; name: string }) => void;
 }
 
-export function InspectorPanel({ node, onClose }: InspectorPanelProps) {
+export function InspectorPanel({ node, onClose, onAddHostedChild }: InspectorPanelProps) {
   if (!node) {
     return (
       <aside className="inspector-panel inspector-panel--empty">
@@ -51,6 +52,13 @@ export function InspectorPanel({ node, onClose }: InspectorPanelProps) {
       ) : (
         <p>Type could not be resolved — the library source may no longer define it.</p>
       )}
+
+      <button
+        className="inspector-panel__add-child"
+        onClick={() => onAddHostedChild({ id: asset.id, name: asset.name })}
+      >
+        + Add hosted asset
+      </button>
     </aside>
   );
 }

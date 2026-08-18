@@ -16,11 +16,19 @@ test("loads the bundled core library and resolves its roots and children", async
   const hardwareChildren = registry.listChildren("core/hardware");
   assert.deepEqual(
     hardwareChildren.map((c) => c.id).sort(),
-    ["core/laptop", "core/network-interface", "core/server", "core/switch"],
+    ["core/disk", "core/laptop", "core/network-interface", "core/server", "core/switch"],
   );
+
+  const serverChildren = registry.listChildren("core/server");
+  assert.deepEqual(serverChildren.map((c) => c.id).sort(), ["core/generic-server"]);
 
   const server = registry.get("core/server");
   assert.equal(server.resolvedIcon, "server");
   assert.ok(server.resolvedAttributes.some((a) => a.key === "manufacturer"));
   assert.ok(server.resolvedAttributes.some((a) => a.key === "cpu"));
+
+  const genericServer = registry.get("core/generic-server");
+  assert.equal(genericServer.resolvedIcon, "server");
+  assert.ok(genericServer.resolvedAttributes.some((a) => a.key === "cpu")); // inherited from core/server
+  assert.ok(genericServer.resolvedAttributes.some((a) => a.key === "motherboard")); // own
 });

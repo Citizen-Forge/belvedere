@@ -67,6 +67,18 @@ const connectsToSwitch: Relationship = {
   properties: {},
 };
 
+function disk(id: string): Asset {
+  return {
+    id,
+    typeId: "core/disk",
+    name: id,
+    layer: "physical",
+    attributeValues: {},
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
 describe("useBelvedereGraph", () => {
   it("loads the physical overview on mount", async () => {
     vi.mocked(api.listAssets).mockResolvedValue([server]);
@@ -129,5 +141,39 @@ describe("useBelvedereGraph", () => {
       expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["server-1", "switch-1"]);
     });
     expect(result.current.edges.some((e) => e.source === "server-1" && e.target === "switch-1")).toBe(true);
+  });
+
+  it("attachHostedChild adds a HOSTS child at a distinct position and collapse() removes it", async () => {
+    vi.mocked(api.listAssets).mockResolvedValue([server]);
+    vi.mocked(api.listRelationships).mockResolvedValue([]);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await result.current.attachHostedChild("server-1", disk("disk-1"));
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["disk-1", "server-1"]);
+    });
+    await result.current.attachHostedChild("server-1", disk("disk-2"));
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["disk-1", "disk-2", "server-1"]);
+    });
+
+    // Regression guard: each sibling gets its own position under the parent, not one derived
+    // from the total node count on the whole canvas (which would put them on top of each other
+    // here, since the canvas only ever has 1-3 nodes in this test).
+    const disk1 = result.current.nodes.find((n) => n.id === "disk-1")!;
+    const disk2 = result.current.nodes.find((n) => n.id === "disk-2")!;
+    expect(disk1.position).not.toEqual(disk2.position);
+
+    const serverNode = result.current.nodes.find((n) => n.id === "server-1")!;
+    expect(serverNode.data.expanded).toBe(true);
+
+    // expand() on an already-expanded node collapses it (there's no separate public collapse()).
+    await result.current.expand("server-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id)).toEqual(["server-1"]);
+    });
   });
 });

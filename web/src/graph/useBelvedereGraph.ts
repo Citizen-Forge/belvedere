@@ -201,6 +201,56 @@ export function useBelvedereGraph() {
     [state.nodes, resolveType, collapse],
   );
 
+  /**
+   * Adds a single already-created HOSTS child to the canvas next to its parent, without touching
+   * anything else — used after creating a new asset "hosted by" a selected node. Deliberately not
+   * built on top of `expand`: calling `expand` on an already-expanded parent would collapse it
+   * instead of adding to it, since that's `expand`'s toggle behavior for a direct user click.
+   * Takes the already-created `Asset` rather than re-fetching it — the caller (CreateAssetDialog)
+   * already has it from the create call.
+   */
+  const attachHostedChild = useCallback(
+    async (parentId: string, asset: Asset) => {
+      const parentNode = state.nodes.find((n) => n.id === parentId);
+      if (!parentNode) return;
+
+      const type = await resolveType(asset.typeId);
+
+      setState((prev) => {
+        if (prev.nodes.some((n) => n.id === asset.id)) return prev;
+
+        // Position among this parent's existing children specifically, not the total node
+        // count on the whole canvas — otherwise the child can land far outside the viewport
+        // on a canvas that already has many unrelated nodes.
+        const siblingCount = [...prev.expandedFrom.values()].filter((p) => p === parentId).length;
+
+        const newNode: AssetNodeType = {
+          id: asset.id,
+          type: "asset",
+          position: childPosition(parentNode.position, siblingCount),
+          data: { asset, type, expanded: false },
+        };
+        const newEdge: Edge = {
+          id: `${parentId}-HOSTS-${asset.id}`,
+          source: parentId,
+          target: asset.id,
+          label: "HOSTS",
+        };
+
+        return {
+          ...prev,
+          nodes: [
+            ...prev.nodes.map((n) => (n.id === parentId ? { ...n, data: { ...n.data, expanded: true } } : n)),
+            newNode,
+          ],
+          edges: [...prev.edges, newEdge],
+          expandedFrom: new Map(prev.expandedFrom).set(asset.id, parentId),
+        };
+      });
+    },
+    [state.nodes, resolveType],
+  );
+
   const loadView = useCallback(
     async (viewId: string) => {
       setState((prev) => ({ ...prev, loading: true, error: null }));
@@ -236,5 +286,14 @@ export function useBelvedereGraph() {
     [state.nodes],
   );
 
-  return { ...state, expand, select, onNodesChange, reload: loadOverview, loadView, saveView };
+  return {
+    ...state,
+    expand,
+    select,
+    onNodesChange,
+    reload: loadOverview,
+    loadView,
+    saveView,
+    attachHostedChild,
+  };
 }

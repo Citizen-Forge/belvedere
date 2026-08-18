@@ -261,6 +261,11 @@ input, select {
   opacity: 0.5;
 }
 
+.inspector-panel__add-child {
+  margin-top: 16px;
+  width: 100%;
+}
+
 /* Create-asset dialog */
 
 .dialog-backdrop {

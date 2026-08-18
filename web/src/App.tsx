@@ -6,9 +6,14 @@ import { InspectorPanel } from "./panel/InspectorPanel";
 import { CreateAssetDialog } from "./create/CreateAssetDialog";
 import { ViewsMenu } from "./views/ViewsMenu";
 
+interface DialogState {
+  open: boolean;
+  hostedBy?: { id: string; name: string };
+}
+
 export default function App() {
   const graph = useBelvedereGraph();
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialog, setDialog] = useState<DialogState>({ open: false });
 
   const selectedNode = graph.nodes.find((n) => n.id === graph.selectedAssetId);
 
@@ -24,7 +29,7 @@ export default function App() {
             onLoad={graph.loadView}
             onReset={graph.reload}
           />
-          <button onClick={() => setDialogOpen(true)}>+ Add asset</button>
+          <button onClick={() => setDialog({ open: true })}>+ Add asset</button>
         </div>
       </header>
 
@@ -34,11 +39,21 @@ export default function App() {
             <BelvedereGraph graph={graph} />
           </ReactFlowProvider>
         </div>
-        <InspectorPanel node={selectedNode} onClose={() => graph.select(null)} />
+        <InspectorPanel
+          node={selectedNode}
+          onClose={() => graph.select(null)}
+          onAddHostedChild={(parent) => setDialog({ open: true, hostedBy: parent })}
+        />
       </main>
 
-      {dialogOpen && (
-        <CreateAssetDialog onClose={() => setDialogOpen(false)} onCreated={graph.reload} />
+      {dialog.open && (
+        <CreateAssetDialog
+          hostedBy={dialog.hostedBy}
+          onClose={() => setDialog({ open: false })}
+          onCreated={(asset) =>
+            dialog.hostedBy ? graph.attachHostedChild(dialog.hostedBy.id, asset) : graph.reload()
+          }
+        />
       )}
     </div>
   );
