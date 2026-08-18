@@ -12,10 +12,10 @@ services:
     restart: unless-stopped
 
   app:
-    ports: !reset [] # macvlan can't publish; reached at 192.168.250.235:3000
+    ports: !reset [] # macvlan can't publish; reached at 192.168.250.236:3000
     networks:
       br0:
-        ipv4_address: 192.168.250.235
+        ipv4_address: 192.168.250.236
     restart: unless-stopped
 
 networks:
