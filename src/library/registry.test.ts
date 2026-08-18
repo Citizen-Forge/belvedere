@@ -27,7 +27,7 @@ test("loads the bundled core library and resolves its roots and children", async
   const componentChildren = registry.listChildren("core/component");
   assert.deepEqual(
     componentChildren.map((c) => c.id).sort(),
-    ["core/cpu", "core/disk", "core/network-interface"],
+    ["core/cpu", "core/disk", "core/gpu", "core/network-interface"],
   );
 
   const server = registry.get("core/server");
