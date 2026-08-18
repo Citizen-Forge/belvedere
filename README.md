@@ -13,7 +13,7 @@ Instances are connected by typed relationships (`HOSTS`, `PROVIDES`, `CONNECTS_T
 physical topology (a server's NIC physically connecting to a switch) and logical topology (an OS
 hosting a container platform hosting a service) in the same graph. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together and why they're built the way
-they are.
+they are, and [ROADMAP.md](ROADMAP.md) for known gaps and what's planned next.
 
 ## Quickstart (local dev, hot-reload)
 
