@@ -145,7 +145,7 @@ package rather than reaching for codegen prematurely.
 
 | Path | Responsibility |
 |---|---|
-| `src/api/client.ts` / `types.ts` | Thin typed `fetch` wrapper (`ApiError` carries the HTTP status) and response-shape types mirroring the backend's. |
+| `src/api/client.ts` / `types.ts` | Thin typed `fetch` wrapper (`ApiError` carries the HTTP status) and response-shape types mirroring the backend's. `request()` only sets `Content-Type: application/json` when the call actually has a body — a bodyless DELETE with that header set gets rejected by Fastify's JSON parser ("Body cannot be empty..."), which silently broke every delete call (`deleteAsset`, `deleteView`) until `mcp/`'s own client hit the same bug and got caught by its stdio integration test; `ViewsMenu`'s delete button had been calling the broken path in the shipped UI the whole time with no test ever clicking it. |
 | `src/graph/useBelvedereGraph.ts` | All graph state — nodes, edges, `expandedFrom` (which node's `expand()` revealed which) — lives in one `GraphState` object updated via a single `setState` per action, specifically so nodes/edges/`expandedFrom` can never disagree about what's new vs. pre-existing (an earlier version tracked `expandedFrom` in separate state and could make `collapse()` delete a pre-existing overview node that happened to share an edge with the expanded one — see `useBelvedereGraph.test.ts`'s "collapsing a node removes only what it revealed" test). The resolved-type cache is a `useRef`, not `useState`, for a related reason: a state-backed cache gave `resolveType`/`toNode`/`loadOverview` a new identity every time a type was first resolved, re-triggering the mount effect and silently resetting the graph mid-expand (caught by browser-testing, not typecheck or unit tests — see that test file's other regression case). `expand()` fetches all relationship targets up front, then decides what's actually new *inside* the `setState` updater (against state as applied, not a snapshot taken before the awaits), which is what makes overlapping `expand()` calls safe. `onNodesChange` wires React Flow's drag interaction back into this state via `applyNodeChanges` — without it, dragging a node moves it on screen only until the next render, since the canvas is fully controlled. `attachHostedChild(parentId, asset)` adds one already-created+linked asset next to its parent (used by the "+ Add hosted asset" flow); it's deliberately separate from `expand()` rather than reusing it, since calling `expand()` on an already-expanded parent collapses it (that's its toggle behavior for a direct click) — and it positions the new node by its sibling count *under that specific parent* (via `expandedFrom`), not the total node count on the canvas, or it can land far outside the viewport on a canvas with unrelated nodes already loaded. |
 | `src/graph/AssetNode.tsx` / `BelvedereGraph.tsx` / `layout.ts` | The React Flow custom node, canvas wrapper, and a deterministic grid/child-offset layout (no auto-layout engine yet — a real one like `dagre`/`elkjs` is the natural upgrade once graphs get bigger than a demo). |
 | `src/panel/InspectorPanel.tsx` | Shows the selected node's resolved attributes (inherited + own, matching `resolveType`'s merge), plus "+ Add hosted asset" to create a new asset HOSTS-connected to the selected one (e.g. adding a disk to a server). |
@@ -158,6 +158,29 @@ verified with one-off Playwright driver scripts during development (dev server +
 Chromium, following the pattern in the `run` skill's `examples/playwright.md`), not committed to
 the repo. If browser-level regressions become a recurring problem, promote that into a real
 Playwright test in this package rather than re-deriving a driver script each time.
+
+## `mcp/` — MCP server
+
+A third sub-package (own `package.json`, like `web/`) exposing Belvedere to AI agents over the
+Model Context Protocol: discover types/assets/relationships and create new ones. It's a thin
+stdio server — every tool is a pure handler function (`src/tools/*.ts`) that calls Belvedere's own
+REST API via `src/apiClient.ts` (a near-duplicate of `web/src/api/client.ts`; not worth a shared
+package yet, same tradeoff `web/` already documents above). `src/index.ts` wires each handler into
+`McpServer.registerTool` via a small `toolCallback` adapter that JSON-serializes the result as
+text content and turns a thrown `ApiError` into an MCP error result instead of crashing the
+process.
+
+Handlers take `api` as an explicit parameter rather than importing the client module directly —
+makes them trivially testable with a plain stub object (`{ listRootTypes: async () => [...] }`),
+no module mocking needed, unlike `web/`'s `vi.mock`-based tests.
+
+**Verification followed the same "don't just claim it, drive it" discipline as the frontend's
+browser tests**: a one-off script (not committed, matching the Playwright driver-script precedent)
+uses the MCP SDK's own `Client` + `StdioClientTransport` to spawn the server as a real subprocess,
+do a real stdio handshake, list tools, and call each one — discovery, create, connect, read, an
+invalid-id error case, and delete/cleanup. This is what actually caught the `Content-Type` bug
+above: unit tests with a stubbed `api` never touch the real HTTP layer, so only an end-to-end run
+against the live backend exposed it.
 
 ## `src/views` (backend) — saved views
 

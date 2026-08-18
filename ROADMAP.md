@@ -4,22 +4,23 @@ Not commitments or a schedule — a working list of what's known to be missing o
 kept here instead of scattered across chat history. `ARCHITECTURE.md` documents what exists;
 this documents what doesn't yet.
 
-## MCP server (AI-driven discovery and inventory management)
+## MCP server (AI-driven discovery and inventory management) — done
 
-An MCP server exposing Belvedere's graph to AI agents/assistants: discover existing elements,
-types, and connections, and add new instances/relationships to the inventory. This would make
-Belvedere usable as the "memory" for an agent doing infrastructure work, not just a UI a human
-drives directly.
+Built as `mcp/` (see `ARCHITECTURE.md`'s `mcp/` section): a stdio MCP server with tools to browse
+types/assets/relationships and create/delete both. Verified end-to-end with a real MCP client
+(stdio handshake, tool calls, error handling) rather than just unit-testing the handlers — that's
+what caught a real bug (a bodyless DELETE request breaking on the API's JSON-parser, also affecting
+the web UI's delete-view button, which no test had ever clicked).
 
-**Planned first real use once built:** map the actual Unraid box (`Citizen-Forge/belvedere`'s own
-deployment target — see `ARCHITECTURE.md`'s Deployment section and [[reference_unraid-box]]) into
-Belvedere as real inventory: the host itself (a `core/generic-server` instance), its CPU/RAM/disks
-via `core/component` children (`core/cpu`, `core/disk`), its GPUs (no library type for a GPU yet —
-add one, likely another `core/component` child), and every Docker container it runs (the OS,
-container platform, and each container as `core/os` → `core/container-platform` → software
-instances, per the pattern in `src/api/networkTopology.integration.test.ts`). Expect this to
-surface gaps in the type library (GPU, more specific container/service types) — extend
-belvedere-library as needed rather than forcing everything into existing types.
+**Next: use it to map the actual Unraid box** (`Citizen-Forge/belvedere`'s own deployment target —
+see `ARCHITECTURE.md`'s Deployment section and [[reference_unraid-box]]) into Belvedere as real
+inventory: the host itself (a `core/generic-server` instance), its CPU/RAM/disks via
+`core/component` children (`core/cpu`, `core/disk`), its GPUs (no library type for a GPU yet — add
+one, likely another `core/component` child), and every Docker container it runs (the OS, container
+platform, and each container as `core/os` → `core/container-platform` → software instances, per
+the pattern in `src/api/networkTopology.integration.test.ts`). Expect this to surface gaps in the
+type library (GPU, more specific container/service types) — extend belvedere-library as needed
+rather than forcing everything into existing types.
 
 ## Other known gaps
 

@@ -1,13 +1,16 @@
 import type {
   Asset,
   AssetLayer,
-  NewSavedView,
+  LibrarySourceConfig,
   Relationship,
   RelationshipKind,
   ResolvedType,
-  SavedView,
   TypeRoot,
-} from "./types";
+} from "./types.js";
+
+// Strip a trailing slash so `${baseUrl}${path}` never produces a doubled "//" before "/api" —
+// Fastify's router doesn't collapse duplicate slashes and would 404 every request.
+const baseUrl = (process.env.BELVEDERE_API_URL ?? "http://localhost:3000").replace(/\/+$/, "");
 
 export class ApiError extends Error {
   readonly status: number;
@@ -22,7 +25,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Only set Content-Type when there's actually a body — Fastify's JSON body parser rejects a
   // bodyless request (e.g. DELETE) that declares application/json with nothing to parse.
   const headers = init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers;
-  const res = await fetch(path, { ...init, headers });
+  const res = await fetch(`${baseUrl}${path}`, { ...init, headers });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ message: res.statusText }));
     throw new ApiError(res.status, body.message ?? res.statusText);
@@ -60,10 +63,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, toId, properties }),
     }),
+  deleteRelationship: (fromId: string, kind: RelationshipKind, toId: string) =>
+    request<void>(`/api/assets/${fromId}/relationships/${kind}/${toId}`, { method: "DELETE" }),
 
-  listViews: () => request<SavedView[]>("/api/views"),
-  getView: (id: string) => request<SavedView>(`/api/views/${id}`),
-  createView: (input: NewSavedView) =>
-    request<SavedView>("/api/views", { method: "POST", body: JSON.stringify(input) }),
-  deleteView: (id: string) => request<void>(`/api/views/${id}`, { method: "DELETE" }),
+  listLibraries: () => request<LibrarySourceConfig[]>("/api/libraries"),
 };
