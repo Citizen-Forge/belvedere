@@ -91,6 +91,35 @@ describe("useBelvedereGraph", () => {
     expect(result.current.nodes.map((n) => n.id)).toEqual(["server-1"]);
   });
 
+  it("excludes physical HOSTS children (e.g. disks) from the overview, revealing them only on expand", async () => {
+    // Regression test: a disk is physical layer, same as its server — the overview used to load
+    // every physical asset unconditionally, so hardware components were permanently visible
+    // regardless of whether their parent was expanded or collapsed. Only a logical child (the OS
+    // in the sibling test above) actually toggled, which looked like expand/collapse was broken
+    // for hardware specifically. The disk here must behave the same way the OS does.
+    const physicalDisk = disk("disk-1");
+    vi.mocked(api.listAssets).mockResolvedValue([server, physicalDisk]);
+    vi.mocked(api.listRelationships).mockImplementation(async (assetId: string) =>
+      assetId === "server-1" ? [{ fromId: "server-1", kind: "HOSTS", toId: "disk-1", properties: {} }] : [],
+    );
+    vi.mocked(api.getAsset).mockResolvedValue(physicalDisk);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.nodes.map((n) => n.id)).toEqual(["server-1"]);
+
+    await result.current.expand("server-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["disk-1", "server-1"]);
+    });
+
+    await result.current.expand("server-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id)).toEqual(["server-1"]);
+    });
+  });
+
   it("expand() adds the hosted node and does not get wiped by resolving a not-yet-cached type", async () => {
     // Regression test: resolving `core/os` for the first time during expand() must not re-trigger
     // the mount effect and reset the graph back to just the physical overview. This happened when

@@ -107,15 +107,44 @@ export function useBelvedereGraph() {
     try {
       const physicalAssets = await api.listAssets({ layer: "physical" });
       const physicalIds = new Set(physicalAssets.map((a) => a.id));
-      const { nodes, edges } = await loadNodesAndEdges(physicalAssets, (_asset, i) => gridPosition(i), (rel) =>
-        physicalIds.has(rel.toId),
+
+      // Type resolution only depends on each asset's typeId, not on relationship data, so it runs
+      // concurrently with the relationship fetch below rather than after it — resolving it for
+      // every physical asset even though some turn out to be hidden (filtered out below) trades a
+      // little redundant work for not serializing two round trips that don't actually depend on
+      // each other.
+      const [relLists, resolvedTypes] = await Promise.all([
+        Promise.all(physicalAssets.map((asset) => api.listRelationships(asset.id))),
+        Promise.all(physicalAssets.map((asset) => resolveType(asset.typeId))),
+      ]);
+      const allRels = relLists.flat();
+      const typeByAssetId = new Map(physicalAssets.map((asset, i) => [asset.id, resolvedTypes[i]]));
+
+      // Anything HOSTS-connected from another physical asset is a component of it (a disk, CPU,
+      // NIC, GPU...) — never a free-standing device in its own right (this is exactly what
+      // core/component's types are for). Keep those out of the top-level overview and let
+      // expand() reveal them: otherwise every device's internals clutter the overview as if they
+      // were standalone equipment, and expand/collapse would have nothing left to actually toggle
+      // for them since they'd already be permanently visible regardless of expansion state.
+      const hostedIds = new Set(
+        allRels.filter((r) => r.kind === "HOSTS" && physicalIds.has(r.toId)).map((r) => r.toId),
       );
+      const topLevelAssets = physicalAssets.filter((a) => !hostedIds.has(a.id));
+      const topLevelIds = new Set(topLevelAssets.map((a) => a.id));
+
+      const nodes: AssetNodeType[] = topLevelAssets.map((asset, i) => ({
+        id: asset.id,
+        type: "asset",
+        position: gridPosition(i),
+        data: { asset, type: typeByAssetId.get(asset.id), expanded: false },
+      }));
+      const edges = allRels.filter((r) => topLevelIds.has(r.fromId) && topLevelIds.has(r.toId)).map(toEdge);
 
       setState({ ...initialState, nodes, edges, loading: false });
     } catch (cause) {
       setState((prev) => ({ ...prev, loading: false, error: (cause as Error).message }));
     }
-  }, [loadNodesAndEdges]);
+  }, [resolveType]);
 
   useEffect(() => {
     loadOverview();

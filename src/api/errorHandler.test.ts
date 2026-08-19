@@ -4,7 +4,7 @@ import { statusForError } from "./errors.js";
 import { TypeResolutionError } from "../library/resolveType.js";
 import { DuplicateTypeIdError } from "../library/registry.js";
 import { AssetNotFoundError } from "../instances/assetRepository.js";
-import { RelationshipEndpointNotFoundError } from "../instances/relationshipRepository.js";
+import { HostsCycleError, RelationshipEndpointNotFoundError } from "../instances/relationshipRepository.js";
 import { AttributeValidationError } from "../instances/validateAttributes.js";
 import {
   LibrarySourceNotFoundError,
@@ -21,6 +21,7 @@ test("maps known domain errors to their HTTP status", () => {
   assert.equal(statusForError(new AttributeValidationError(["x"])), 400);
   assert.equal(statusForError(new DuplicateTypeIdError("x", "a", "b")), 409);
   assert.equal(statusForError(new LibrarySourceAlreadyExistsError("x")), 409);
+  assert.equal(statusForError(new HostsCycleError("a", "b")), 409);
 });
 
 test("defaults unrecognized errors to 500", () => {

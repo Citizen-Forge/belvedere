@@ -8,6 +8,15 @@ export class RelationshipEndpointNotFoundError extends Error {
   }
 }
 
+export class HostsCycleError extends Error {
+  constructor(fromId: string, toId: string) {
+    super(
+      `Cannot create HOSTS ${fromId} -> ${toId}: ${toId} already (transitively) hosts ${fromId}, ` +
+        "which would create a cycle",
+    );
+  }
+}
+
 // Neo4j relationship types can't be parameterized, so each kind maps to a
 // literal, exhaustively-checked Cypher fragment rather than interpolating
 // caller input directly.
@@ -38,6 +47,16 @@ export class RelationshipRepository {
     toId: string,
     properties: Relationship["properties"] = {},
   ): Promise<Relationship> {
+    // HOSTS specifically drives the graph UI's containment/expand-collapse model (see
+    // ARCHITECTURE.md) — a cycle in it makes every asset on the cycle permanently invisible
+    // there (each is only ever revealed by expanding its HOSTS parent, and every member's parent
+    // is another cycle member). PROVIDES/CONNECTS_TO have no such containment semantics, so this
+    // check is HOSTS-only, not a general graph-wide acyclicity rule.
+    if (kind === "HOSTS") {
+      if (fromId === toId) throw new HostsCycleError(fromId, toId);
+      await this.assertNoHostsCycle(fromId, toId);
+    }
+
     const relType = cypherRelForKind(kind);
     await withSession(this.driver, async (session) => {
       const result = await session.run(
@@ -79,5 +98,17 @@ export class RelationshipRepository {
         { fromId, toId },
       ),
     );
+  }
+
+  private async assertNoHostsCycle(fromId: string, toId: string): Promise<void> {
+    await withSession(this.driver, async (session) => {
+      const result = await session.run(
+        `MATCH (to:Asset {id: $toId})-[:HOSTS*]->(from:Asset {id: $fromId}) RETURN count(*) > 0 AS wouldCycle`,
+        { fromId, toId },
+      );
+      if (result.records[0]?.get("wouldCycle")) {
+        throw new HostsCycleError(fromId, toId);
+      }
+    });
   }
 }

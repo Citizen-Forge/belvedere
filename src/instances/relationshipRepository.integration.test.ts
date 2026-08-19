@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { Driver } from "neo4j-driver";
 import { setupTestDb } from "./testSupport.js";
 import { AssetRepository } from "./assetRepository.js";
-import { RelationshipRepository } from "./relationshipRepository.js";
+import { HostsCycleError, RelationshipRepository } from "./relationshipRepository.js";
 
 let driver: Driver | undefined;
 let assets: AssetRepository;
@@ -74,4 +74,38 @@ test("create() rejects when either endpoint does not exist", async () => {
   await assert.rejects(() =>
     relationships.create(server.id, "HOSTS", "00000000-0000-0000-0000-000000000000"),
   );
+});
+
+test("create() rejects a HOSTS self-loop", async () => {
+  const server = await makeAsset("core/server", "self-host-01", "physical");
+  await assert.rejects(() => relationships.create(server.id, "HOSTS", server.id), HostsCycleError);
+});
+
+test("create() rejects a HOSTS relationship that would close a transitive cycle", async () => {
+  const a = await makeAsset("core/server", "cycle-a", "physical");
+  const b = await makeAsset("core/component", "cycle-b", "physical");
+  const c = await makeAsset("core/component", "cycle-c", "physical");
+
+  await relationships.create(a.id, "HOSTS", b.id);
+  await relationships.create(b.id, "HOSTS", c.id);
+
+  // c already (transitively) hosted by a -> b -> c; c HOSTS a would close the loop.
+  await assert.rejects(() => relationships.create(c.id, "HOSTS", a.id), HostsCycleError);
+
+  // The existing a -> b -> c chain is untouched by the rejected attempt.
+  const relsFromC = await relationships.listFrom(c.id);
+  assert.equal(relsFromC.length, 0);
+});
+
+test("create() still allows a non-HOSTS relationship between assets already HOSTS-connected", async () => {
+  // The cycle check is HOSTS-specific — CONNECTS_TO/PROVIDES have no containment semantics, so a
+  // "cycle" in those kinds isn't actually a problem (e.g. two peers both HOSTS'd by a third asset
+  // can legitimately CONNECTS_TO each other).
+  const parent = await makeAsset("core/server", "parent-01", "physical");
+  const child = await makeAsset("core/component", "child-01", "physical");
+  await relationships.create(parent.id, "HOSTS", child.id);
+
+  await relationships.create(child.id, "CONNECTS_TO", parent.id);
+  const relsFromChild = await relationships.listFrom(child.id);
+  assert.ok(relsFromChild.some((r) => r.kind === "CONNECTS_TO" && r.toId === parent.id));
 });
