@@ -261,12 +261,18 @@ input, select {
   opacity: 0.5;
 }
 
-.inspector-panel__add-child {
+.inspector-panel__actions {
+  display: flex;
+  gap: 8px;
   margin-top: 16px;
-  width: 100%;
 }
 
-.inspector-panel__groups {
+.inspector-panel__actions button {
+  flex: 1;
+}
+
+.inspector-panel__groups,
+.inspector-panel__members {
   margin-top: 16px;
 }
 
@@ -275,12 +281,12 @@ input, select {
   padding-left: 18px;
 }
 
-.inspector-panel__join-group {
+.inspector-panel__group-picker {
   display: flex;
   gap: 8px;
 }
 
-.inspector-panel__join-group select {
+.inspector-panel__group-picker select {
   flex: 1;
   min-width: 0;
 }

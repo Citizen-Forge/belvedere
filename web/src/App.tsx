@@ -5,10 +5,13 @@ import { useBelvedereGraph } from "./graph/useBelvedereGraph";
 import { InspectorPanel } from "./panel/InspectorPanel";
 import { CreateAssetDialog } from "./create/CreateAssetDialog";
 import { ViewsMenu } from "./views/ViewsMenu";
+import { GROUP_TYPE_ID } from "./api/types";
 
 interface DialogState {
   open: boolean;
   hostedBy?: { id: string; name: string };
+  presetTypeId?: string;
+  title?: string;
 }
 
 export default function App() {
@@ -43,13 +46,23 @@ export default function App() {
           node={selectedNode}
           onClose={() => graph.select(null)}
           onAddHostedChild={(parent) => setDialog({ open: true, hostedBy: parent })}
-          onJoinGroup={(member, group) => graph.joinGroup(member.id, group)}
+          onAddHostedGroup={(parent) =>
+            setDialog({
+              open: true,
+              hostedBy: parent,
+              presetTypeId: GROUP_TYPE_ID,
+              title: `Add group hosted by ${parent.name}`,
+            })
+          }
+          onJoinGroup={(member, group) => graph.joinGroup(member, group)}
         />
       </main>
 
       {dialog.open && (
         <CreateAssetDialog
           hostedBy={dialog.hostedBy}
+          presetTypeId={dialog.presetTypeId}
+          title={dialog.title}
           onClose={() => setDialog({ open: false })}
           onCreated={(asset) =>
             dialog.hostedBy ? graph.attachHostedChild(dialog.hostedBy.id, asset) : graph.reload()

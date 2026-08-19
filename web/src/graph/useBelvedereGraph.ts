@@ -330,30 +330,57 @@ export function useBelvedereGraph() {
    * collapsing the member later must not delete a group that exists independently of it.
    */
   const joinGroup = useCallback(
-    async (memberId: string, group: Asset) => {
-      await api.createRelationship(memberId, "MEMBER_OF", group.id);
-      const type = await resolveType(group.typeId);
+    async (member: Asset, group: Asset) => {
+      await api.createRelationship(member.id, "MEMBER_OF", group.id);
+      // Either side (or neither) may already be on canvas — the "asset joins a group" flow always
+      // has the member visible (it's the selected node) but not necessarily the group; the group's
+      // own "add an existing asset as a member" flow is the reverse: the group is visible, but the
+      // chosen member could be anywhere in the whole inventory, including nested under something
+      // that's never been expanded. Resolve both types regardless of which turns out unneeded.
+      const [memberType, groupType] = await Promise.all([
+        resolveType(member.typeId),
+        resolveType(group.typeId),
+      ]);
 
       setState((prev) => {
-        const memberNode = prev.nodes.find((n) => n.id === memberId);
-        if (!memberNode) return prev;
+        const existingIds = new Set(prev.nodes.map((n) => n.id));
+        const newEdge = toEdge({ fromId: member.id, kind: "MEMBER_OF", toId: group.id, properties: {} });
+        const edgeExists = prev.edges.some((e) => e.id === newEdge.id);
+        if (edgeExists && existingIds.has(member.id) && existingIds.has(group.id)) return prev;
 
-        const newEdge = toEdge({ fromId: memberId, kind: "MEMBER_OF", toId: group.id, properties: {} });
-        if (prev.edges.some((e) => e.id === newEdge.id)) return prev;
+        // Anchor new nodes near whichever side is already visible; if neither is, there's no
+        // meaningful "near" — just drop them at the origin, same as the top-level "+ Add asset" flow.
+        const anchorPosition =
+          prev.nodes.find((n) => n.id === member.id)?.position ??
+          prev.nodes.find((n) => n.id === group.id)?.position ??
+          { x: 0, y: 0 };
 
-        if (prev.nodes.some((n) => n.id === group.id)) {
-          return { ...prev, edges: [...prev.edges, newEdge] };
+        const newNodes: AssetNodeType[] = [];
+        if (!existingIds.has(member.id)) {
+          newNodes.push({
+            id: member.id,
+            type: "asset",
+            position: childPosition(anchorPosition, newNodes.length),
+            data: { asset: member, type: memberType, expanded: false },
+          });
+        }
+        if (!existingIds.has(group.id)) {
+          newNodes.push({
+            id: group.id,
+            type: "asset",
+            position: childPosition(anchorPosition, newNodes.length),
+            data: { asset: group, type: groupType, expanded: false },
+          });
         }
 
-        // Group isn't on canvas yet — place it near the member so the new membership is visible
-        // immediately, without an expandedFrom entry (see doc comment above).
-        const newNode: AssetNodeType = {
-          id: group.id,
-          type: "asset",
-          position: childPosition(memberNode.position, 0),
-          data: { asset: group, type, expanded: false },
+        // Neither newly-added node gets an expandedFrom entry — membership is additive, not
+        // containment (see the doc comment on this invariant elsewhere in this file), so neither
+        // should vanish just because some unrelated node it's near later gets collapsed.
+        return {
+          ...prev,
+          nodes: [...prev.nodes, ...newNodes],
+          edges: edgeExists ? prev.edges : [...prev.edges, newEdge],
         };
-        return { ...prev, nodes: [...prev.nodes, newNode], edges: [...prev.edges, newEdge] };
       });
     },
     [resolveType],

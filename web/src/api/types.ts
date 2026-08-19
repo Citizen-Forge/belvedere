@@ -1,3 +1,8 @@
+// Single source of truth for the group type id — App.tsx (preset-type "+ Add hosted group" flow)
+// and InspectorPanel.tsx (group detection, group-listing queries) both need it and must never
+// drift apart.
+export const GROUP_TYPE_ID = "core/group";
+
 export type TypeRoot = "hardware" | "software" | "cloud-provider";
 export type AttributeDataType = "string" | "number" | "boolean" | "enum" | "reference";
 

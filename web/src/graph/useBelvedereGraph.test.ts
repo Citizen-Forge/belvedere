@@ -337,7 +337,7 @@ describe("useBelvedereGraph", () => {
     const { result } = renderHook(() => useBelvedereGraph());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    await result.current.joinGroup("server-1", gpuGroup);
+    await result.current.joinGroup(server, gpuGroup);
 
     await waitFor(() => {
       expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-1", "server-1"]);
@@ -349,5 +349,38 @@ describe("useBelvedereGraph", () => {
     // not delete the group it joined, unlike a real HOSTS child.
     const serverNode = result.current.nodes.find((n) => n.id === "server-1")!;
     expect(serverNode.data.expanded).toBe(false);
+  });
+
+  it("joinGroup adds the member to the canvas too when it isn't already visible (the group's own 'add existing asset' flow)", async () => {
+    // Regression test: the inspector's group-side "Members" picker can add any existing asset in
+    // the whole inventory, not just ones already on screen — e.g. one still hidden as an
+    // unexpanded HOSTS child elsewhere. joinGroup used to only ever place the *group* on canvas if
+    // missing, assuming the member (the selected node) was always already visible — true for the
+    // "asset joins a group" direction, false for this reverse direction.
+    const gpuGroup = group("group-1");
+    const hiddenDisk = disk("hidden-disk-1");
+    vi.mocked(api.listAssets).mockResolvedValue([gpuGroup]);
+    vi.mocked(api.listRelationships).mockResolvedValue([]);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+    vi.mocked(api.createRelationship).mockResolvedValue({
+      fromId: "hidden-disk-1",
+      kind: "MEMBER_OF",
+      toId: "group-1",
+      properties: {},
+    });
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.nodes.map((n) => n.id)).toEqual(["group-1"]);
+
+    await result.current.joinGroup(hiddenDisk, gpuGroup);
+
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-1", "hidden-disk-1"]);
+    });
+    expect(api.createRelationship).toHaveBeenCalledWith("hidden-disk-1", "MEMBER_OF", "group-1");
+    expect(
+      result.current.edges.some((e) => e.source === "hidden-disk-1" && e.target === "group-1"),
+    ).toBe(true);
   });
 });
