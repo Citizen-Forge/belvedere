@@ -3,7 +3,8 @@ import { applyNodeChanges, type Edge, type NodeChange } from "@xyflow/react";
 import { api } from "../api/client";
 import type { Asset, Relationship, ResolvedType, SavedView } from "../api/types";
 import type { AssetNodeType } from "./AssetNode";
-import { childPosition, gridPosition } from "./layout";
+import { autoLayout } from "./autoLayout";
+import { childPosition } from "./layout";
 
 interface GraphState {
   nodes: AssetNodeType[];
@@ -140,13 +141,17 @@ export function useBelvedereGraph() {
       const topLevelAssets = physicalAssets.filter((a) => !hostedIds.has(a.id));
       const topLevelIds = new Set(topLevelAssets.map((a) => a.id));
 
-      const nodes: AssetNodeType[] = topLevelAssets.map((asset, i) => ({
+      const unpositioned: AssetNodeType[] = topLevelAssets.map((asset) => ({
         id: asset.id,
         type: "asset",
-        position: gridPosition(i),
+        position: { x: 0, y: 0 }, // overwritten by autoLayout below
         data: { asset, type: typeByAssetId.get(asset.id), expanded: false },
       }));
       const edges = allRels.filter((r) => topLevelIds.has(r.fromId) && topLevelIds.has(r.toId)).map(toEdge);
+      // Nothing to disrupt yet on a fresh load, unlike expand()/attachHostedChild() adding to an
+      // already-arranged (possibly manually-dragged) canvas — so the initial overview gets a real
+      // layout instead of the plain grid, straight away.
+      const nodes = autoLayout(unpositioned, edges);
 
       setState({ ...initialState, nodes, edges, loading: false });
     } catch (cause) {
@@ -166,6 +171,14 @@ export function useBelvedereGraph() {
   // a node moves it on screen only until the next render, since we fully control the `nodes` prop.
   const onNodesChange = useCallback((changes: NodeChange<AssetNodeType>[]) => {
     setState((prev) => ({ ...prev, nodes: applyNodeChanges(changes, prev.nodes) }));
+  }, []);
+
+  // On-demand re-layout of whatever's currently on the canvas — expand()/attachHostedChild()
+  // deliberately don't do this automatically on every reveal (see autoLayout.ts's doc comment),
+  // so a graph that's been expanded a lot without ever calling this can still sprawl until the
+  // user asks for it.
+  const arrange = useCallback(() => {
+    setState((prev) => ({ ...prev, nodes: autoLayout(prev.nodes, prev.edges) }));
   }, []);
 
   const collapse = useCallback((assetId: string) => {
@@ -391,5 +404,6 @@ export function useBelvedereGraph() {
     saveView,
     attachHostedChild,
     joinGroup,
+    arrange,
   };
 }

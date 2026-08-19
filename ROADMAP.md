@@ -71,10 +71,25 @@ tagged into a free-floating "ALL GPUs" group, the server itself tagged into a fr
   a real design conversation (health checks? uptime pings? metric ingestion?) before building.
 - **Saved-view sharing/permissions.** Views are global to the install, not per-user — fine for
   single-user, needs revisiting before any multi-user support.
-- **Auto-layout** (bumped up after mapping the real Unraid box — see above). The graph canvas uses
-  a fixed grid/child-offset layout (`web/src/graph/layout.ts`); a real layout engine
-  (`dagre`/`elkjs`) is the natural upgrade now that a real graph (59 nodes) has actually
-  demonstrated the problem, not just a hypothetical one.
+- **Auto-layout — done (2026-08-19).** `web/src/graph/autoLayout.ts` runs `dagre` (top-to-bottom
+  hierarchical) over whatever's currently on the canvas, wired to a new "Auto-arrange" button
+  (`BelvedereGraph.tsx`'s React Flow `Panel`, which also re-fits the viewport to the result —
+  `fitView`'s own prop only runs once on mount). Used for the initial overview too (nothing to
+  disrupt there), while `expand()`/`attachHostedChild()`/`joinGroup()` keep their existing
+  incremental child-offset placement rather than re-arranging the whole canvas on every single
+  reveal, which would fight manual dragging. Verified against the real, live 59-node Unraid graph
+  (not a synthetic one): expanding unraid → OS → Docker → all 39 containers previously left most of
+  the graph scrolled off-screen in a horizontal strip with no way to see it all at once; Auto-arrange
+  turns it into a legible ranked tree that `fitView` fits on screen.
+
+  Known remaining rough edge: dagre centers each rank over *its own* children's span, not the whole
+  tree's span, so on a very wide-but-shallow hierarchy like this one (1 root → 18 direct children →
+  39 grandchildren under just one of them) the root can end up positioned near the horizontal edge of
+  the fitted view rather than looking centered above everything — confirmed on the real graph, not
+  just theorized. Still fully visible and clickable, just not centered. Not fixing now — would need
+  either a different layout algorithm (a proper tree/radial layout, or `elkjs` with a layered
+  algorithm tuned for this) or custom post-processing on top of dagre's output; the current version
+  is already a large improvement over the fixed grid and worth shipping as-is.
 - **No committed browser test suite.** Every UI feature so far was verified with one-off
   Playwright driver scripts during development, not committed — see `ARCHITECTURE.md`'s `web/`
   section. Worth promoting to a real Playwright suite if browser-level regressions become a
