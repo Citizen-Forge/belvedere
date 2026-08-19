@@ -25,6 +25,22 @@ This also made the missing auto-layout item below concretely painful for the fir
 59-node real graph sprawls in a long strip with the current grid/child-offset layout, unlike every
 synthetic test graph so far which stayed small. Worth bumping priority on that item.
 
+## Collapsible groups — done
+
+`core/group` (2026-08-19): a generic organizational container (e.g. an "array" group holding a
+NAS's data disks, or a "GPUs" group) — HOSTS-connect it under whatever it organizes, then
+HOSTS-connect its members to it. Needed **zero new mechanics**: `loadOverview`'s HOSTS-child
+exclusion (see `ARCHITECTURE.md`) and `expand()`'s per-node reveal already compose correctly for
+arbitrary nesting — a group's members stay hidden until the group itself is expanded, exactly like
+any other asset. Verified with a real nested scenario (server → group → 2 disks, plus a loose disk
+directly on the server) driven through the actual browser UI.
+
+Known quirk: `core/group` has to extend `core/hardware` (every type must extend one of the three
+system roots), so it inherits `manufacturer`/`model` even though a pure organizational container
+has neither — they just show as unset in the inspector. Not fixing this now; it'd need real
+type-system work (per-type attribute exclusion, or a way to mark a type "non-physical" despite its
+root) for a purely cosmetic issue.
+
 ## Other known gaps
 
 - **Publishing a type back to a library from inside the app.** Currently a manual fork-and-PR
