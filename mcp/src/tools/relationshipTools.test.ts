@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRelationship, deleteRelationship, listAssetRelationships } from "./relationshipTools.js";
+import {
+  createRelationship,
+  deleteRelationship,
+  listAssetRelationships,
+  listGroupMembers,
+} from "./relationshipTools.js";
 import type { api } from "../apiClient.js";
 
 function fakeApi(overrides: Partial<typeof api>): typeof api {
@@ -18,6 +23,20 @@ test("listAssetRelationships passes the asset id through", async () => {
 
   await listAssetRelationships({ assetId: "asset-1" }, api);
   assert.equal(receivedId, "asset-1");
+});
+
+test("listGroupMembers queries incoming MEMBER_OF edges via listMembers, not listRelationships", async () => {
+  let receivedId: string | undefined;
+  const api = fakeApi({
+    listMembers: async (assetId) => {
+      receivedId = assetId;
+      return [{ fromId: "gpu-1", kind: "MEMBER_OF", toId: "group-1", properties: {} }];
+    },
+  });
+
+  const result = await listGroupMembers({ assetId: "group-1" }, api);
+  assert.equal(receivedId, "group-1");
+  assert.deepEqual(result, [{ fromId: "gpu-1", kind: "MEMBER_OF", toId: "group-1", properties: {} }]);
 });
 
 test("createRelationship forwards fromId/kind/toId/properties", async () => {

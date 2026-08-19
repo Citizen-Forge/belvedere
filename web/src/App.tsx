@@ -43,6 +43,7 @@ export default function App() {
           node={selectedNode}
           onClose={() => graph.select(null)}
           onAddHostedChild={(parent) => setDialog({ open: true, hostedBy: parent })}
+          onJoinGroup={(member, group) => graph.joinGroup(member.id, group)}
         />
       </main>
 

@@ -1,7 +1,11 @@
 import { TypeResolutionError } from "../library/resolveType.js";
 import { DuplicateTypeIdError } from "../library/registry.js";
 import { AssetNotFoundError } from "../instances/assetRepository.js";
-import { HostsCycleError, RelationshipEndpointNotFoundError } from "../instances/relationshipRepository.js";
+import {
+  HostsCycleError,
+  RelationshipEndpointNotFoundError,
+  SelfMembershipError,
+} from "../instances/relationshipRepository.js";
 import { AttributeValidationError } from "../instances/validateAttributes.js";
 import {
   LibrarySourceNotFoundError,
@@ -20,5 +24,6 @@ export function statusForError(error: unknown): number {
   if (error instanceof DuplicateTypeIdError) return 409;
   if (error instanceof LibrarySourceAlreadyExistsError) return 409;
   if (error instanceof HostsCycleError) return 409;
+  if (error instanceof SelfMembershipError) return 409;
   return 500;
 }

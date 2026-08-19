@@ -8,7 +8,7 @@ export const createAssetBodySchema = z.object({
   attributeValues: z.record(attributeValue).default({}),
 });
 
-export const relationshipKindSchema = z.enum(["HOSTS", "PROVIDES", "CONNECTS_TO"]);
+export const relationshipKindSchema = z.enum(["HOSTS", "PROVIDES", "CONNECTS_TO", "MEMBER_OF"]);
 
 export const createRelationshipBodySchema = z.object({
   kind: relationshipKindSchema,

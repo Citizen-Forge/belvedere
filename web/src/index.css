@@ -266,6 +266,25 @@ input, select {
   width: 100%;
 }
 
+.inspector-panel__groups {
+  margin-top: 16px;
+}
+
+.inspector-panel__group-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+
+.inspector-panel__join-group {
+  display: flex;
+  gap: 8px;
+}
+
+.inspector-panel__join-group select {
+  flex: 1;
+  min-width: 0;
+}
+
 /* Create-asset dialog */
 
 .dialog-backdrop {

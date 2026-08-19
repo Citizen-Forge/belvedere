@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { useBelvedereGraph } from "./useBelvedereGraph";
 import type { Asset, Relationship, ResolvedType } from "../api/types";
@@ -7,8 +7,10 @@ vi.mock("../api/client", () => ({
   api: {
     listAssets: vi.fn(),
     listRelationships: vi.fn(),
+    listMembers: vi.fn(),
     getAsset: vi.fn(),
     getType: vi.fn(),
+    createRelationship: vi.fn(),
   },
 }));
 
@@ -80,6 +82,12 @@ function disk(id: string): Asset {
 }
 
 describe("useBelvedereGraph", () => {
+  beforeEach(() => {
+    // Every test that calls expand() exercises the outgoing-relationships path; only the
+    // group-membership tests below care about incoming MEMBER_OF edges, so default it to none.
+    vi.mocked(api.listMembers).mockResolvedValue([]);
+  });
+
   it("loads the physical overview on mount", async () => {
     vi.mocked(api.listAssets).mockResolvedValue([server]);
     vi.mocked(api.listRelationships).mockResolvedValue([]);
@@ -204,5 +212,142 @@ describe("useBelvedereGraph", () => {
     await waitFor(() => {
       expect(result.current.nodes.map((n) => n.id)).toEqual(["server-1"]);
     });
+  });
+
+  function group(id: string): Asset {
+    return {
+      id,
+      typeId: "core/group",
+      name: id,
+      layer: "physical",
+      attributeValues: {},
+      createdAt: "",
+      updatedAt: "",
+    };
+  }
+
+  it("expand() on a group reveals assets tagged MEMBER_OF it, even though the group has no outgoing relationships of its own", async () => {
+    // Membership is stored on the member (member -MEMBER_OF-> group), not the group, so
+    // discovering a group's members means reading incoming edges — the reverse direction from
+    // every other relationship kind expand() already handles.
+    const gpuGroup = group("group-1");
+    const gpu1 = disk("gpu-1");
+    const gpu2 = disk("gpu-2");
+    vi.mocked(api.listAssets).mockResolvedValue([gpuGroup]);
+    vi.mocked(api.listRelationships).mockResolvedValue([]);
+    vi.mocked(api.listMembers).mockImplementation(async (assetId: string) =>
+      assetId === "group-1"
+        ? [
+            { fromId: "gpu-1", kind: "MEMBER_OF", toId: "group-1", properties: {} },
+            { fromId: "gpu-2", kind: "MEMBER_OF", toId: "group-1", properties: {} },
+          ]
+        : [],
+    );
+    vi.mocked(api.getAsset).mockImplementation(async (id: string) => (id === "gpu-1" ? gpu1 : gpu2));
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.nodes.map((n) => n.id)).toEqual(["group-1"]);
+
+    await result.current.expand("group-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["gpu-1", "gpu-2", "group-1"]);
+    });
+    expect(result.current.edges.some((e) => e.source === "gpu-1" && e.target === "group-1")).toBe(true);
+  });
+
+  it("collapsing a node that revealed a group via its own outgoing MEMBER_OF tag does not delete that group or its already-revealed members", async () => {
+    // Regression test: expand() used to record expandedFrom for *every* newly-revealed node
+    // regardless of relationship kind. A NAS tagged MEMBER_OF a "Storage" group would reveal that
+    // group as if the NAS owned it, so collapsing the NAS later cascaded into deleting the group
+    // (and anything already revealed under it) even though the group exists independently — the
+    // exact invariant joinGroup's own doc comment establishes must hold.
+    const nas = server;
+    const storageGroup = group("group-storage");
+    const diskInGroup = disk("disk-in-group");
+    vi.mocked(api.listAssets).mockResolvedValue([nas]);
+    vi.mocked(api.listRelationships).mockImplementation(async (assetId: string) => {
+      if (assetId === "server-1") {
+        return [{ fromId: "server-1", kind: "MEMBER_OF", toId: "group-storage", properties: {} }];
+      }
+      return [];
+    });
+    vi.mocked(api.listMembers).mockImplementation(async (assetId: string) =>
+      assetId === "group-storage"
+        ? [{ fromId: "disk-in-group", kind: "MEMBER_OF", toId: "group-storage", properties: {} }]
+        : [],
+    );
+    vi.mocked(api.getAsset).mockImplementation(async (id: string) =>
+      id === "group-storage" ? storageGroup : diskInGroup,
+    );
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Expand the NAS: reveals the group via its own outgoing MEMBER_OF tag.
+    await result.current.expand("server-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-storage", "server-1"]);
+    });
+
+    // Expand the group itself: reveals its member via listMembers.
+    await result.current.expand("group-storage");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual([
+        "disk-in-group",
+        "group-storage",
+        "server-1",
+      ]);
+    });
+
+    // Collapse the NAS (toggle expand again) — the group and its member must survive, since the
+    // group's presence is additive (MEMBER_OF), not owned by the NAS's expanded state. collapse()
+    // only ever removes *descendants*, never the toggled node itself, so server-1 stays too.
+    await result.current.expand("server-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual([
+        "disk-in-group",
+        "group-storage",
+        "server-1",
+      ]);
+    });
+
+    // But the group's *own* collapse still hides its members — that's the actual
+    // collapsible-groups behavior, unaffected by this fix.
+    await result.current.expand("group-storage");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-storage", "server-1"]);
+    });
+  });
+
+  it("joinGroup tags an existing asset onto an existing group without disturbing its HOSTS parent", async () => {
+    const gpuGroup = group("group-1");
+    vi.mocked(api.listAssets).mockResolvedValue([server]);
+    vi.mocked(api.listRelationships).mockResolvedValue([]);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+    vi.mocked(api.createRelationship).mockResolvedValue({
+      fromId: "server-1",
+      kind: "MEMBER_OF",
+      toId: "group-1",
+      properties: {},
+    });
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await result.current.joinGroup("server-1", gpuGroup);
+
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-1", "server-1"]);
+    });
+    expect(api.createRelationship).toHaveBeenCalledWith("server-1", "MEMBER_OF", "group-1");
+    expect(result.current.edges.some((e) => e.source === "server-1" && e.target === "group-1")).toBe(true);
+
+    // Membership is additive, not containment: collapsing (toggling expand on) the member must
+    // not delete the group it joined, unlike a real HOSTS child.
+    const serverNode = result.current.nodes.find((n) => n.id === "server-1")!;
+    expect(serverNode.data.expanded).toBe(false);
   });
 });

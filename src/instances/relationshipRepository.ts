@@ -17,6 +17,12 @@ export class HostsCycleError extends Error {
   }
 }
 
+export class SelfMembershipError extends Error {
+  constructor(assetId: string) {
+    super(`Cannot create MEMBER_OF ${assetId} -> ${assetId}: an asset cannot be a member of itself`);
+  }
+}
+
 // Neo4j relationship types can't be parameterized, so each kind maps to a
 // literal, exhaustively-checked Cypher fragment rather than interpolating
 // caller input directly.
@@ -28,6 +34,8 @@ function cypherRelForKind(kind: RelationshipKind): string {
       return "PROVIDES";
     case "CONNECTS_TO":
       return "CONNECTS_TO";
+    case "MEMBER_OF":
+      return "MEMBER_OF";
     default: {
       // Compile-time exhaustiveness check: fails to typecheck if a RelationshipKind
       // variant is ever added without a case above (tsconfig doesn't set
@@ -56,6 +64,12 @@ export class RelationshipRepository {
       if (fromId === toId) throw new HostsCycleError(fromId, toId);
       await this.assertNoHostsCycle(fromId, toId);
     }
+    // MEMBER_OF has no containment semantics, so it doesn't need HOSTS's transitive-cycle check —
+    // but a self-loop is still nonsensical (an asset can't be a member of itself) and the UI's own
+    // guard against it (filtering the join picker) is client-side only.
+    if (kind === "MEMBER_OF" && fromId === toId) {
+      throw new SelfMembershipError(fromId);
+    }
 
     const relType = cypherRelForKind(kind);
     await withSession(this.driver, async (session) => {
@@ -77,7 +91,7 @@ export class RelationshipRepository {
   async listFrom(assetId: string): Promise<Relationship[]> {
     return withSession(this.driver, async (session) => {
       const result = await session.run(
-        `MATCH (from:Asset {id: $assetId})-[r:HOSTS|PROVIDES|CONNECTS_TO]->(to:Asset)
+        `MATCH (from:Asset {id: $assetId})-[r:HOSTS|PROVIDES|CONNECTS_TO|MEMBER_OF]->(to:Asset)
          RETURN type(r) AS kind, to.id AS toId, r.properties AS properties`,
         { assetId },
       );
@@ -85,6 +99,26 @@ export class RelationshipRepository {
         fromId: assetId,
         kind: record.get("kind") as RelationshipKind,
         toId: record.get("toId") as string,
+        properties: JSON.parse(record.get("properties") ?? "{}"),
+      }));
+    });
+  }
+
+  // The reverse of listFrom, restricted to MEMBER_OF: who tagged themselves as
+  // a member of this asset (expected to usually be a group). Needed because
+  // membership is stored on the member (member -[MEMBER_OF]-> group), so
+  // discovering a group's members means querying incoming edges, not outgoing.
+  async listMembers(assetId: string): Promise<Relationship[]> {
+    return withSession(this.driver, async (session) => {
+      const result = await session.run(
+        `MATCH (member:Asset)-[r:MEMBER_OF]->(to:Asset {id: $assetId})
+         RETURN member.id AS fromId, r.properties AS properties`,
+        { assetId },
+      );
+      return result.records.map((record) => ({
+        fromId: record.get("fromId") as string,
+        kind: "MEMBER_OF" as RelationshipKind,
+        toId: assetId,
         properties: JSON.parse(record.get("properties") ?? "{}"),
       }));
     });

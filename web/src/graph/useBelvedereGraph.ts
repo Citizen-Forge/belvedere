@@ -27,7 +27,15 @@ const initialState: GraphState = {
 };
 
 function toEdge(rel: Relationship): Edge {
-  return { id: `${rel.fromId}-${rel.kind}-${rel.toId}`, source: rel.fromId, target: rel.toId, label: rel.kind };
+  return {
+    id: `${rel.fromId}-${rel.kind}-${rel.toId}`,
+    source: rel.fromId,
+    target: rel.toId,
+    label: rel.kind,
+    // MEMBER_OF is a tag, not containment — dashed to read as an overlay distinct from a solid
+    // HOSTS/PROVIDES/CONNECTS_TO line at a glance.
+    style: rel.kind === "MEMBER_OF" ? { strokeDasharray: "4 4" } : undefined,
+  };
 }
 
 /** Tracks which node added which, so collapsing a node removes everything it (transitively) revealed. */
@@ -186,13 +194,23 @@ export function useBelvedereGraph() {
         return;
       }
 
-      const rels = await api.listRelationships(assetId);
+      // Two independent directions: this asset's own outgoing relationships (HOSTS children,
+      // PROVIDES/CONNECTS_TO peers, and its own "part of" MEMBER_OF tags), plus — since membership
+      // is stored on the member, not the group — whoever has tagged themselves as a MEMBER_OF
+      // *this* asset (relevant when expanding a group: that's how its members get revealed).
+      const [outgoingRels, memberRels] = await Promise.all([
+        api.listRelationships(assetId),
+        api.listMembers(assetId),
+      ]);
+      const rels = [...outgoingRels, ...memberRels];
       // Fetch every target's asset + resolved type up front, including ones that turn out to
       // already be on the canvas — which of them are actually "new" is decided inside the setState
       // updater below, against the state at the moment it's applied, not a snapshot taken before
       // these awaits. That's what makes this safe if two expand() calls overlap: whichever's
       // setState applies second still sees the first's results and won't add duplicate node ids.
-      const targetIds = [...new Set(rels.map((r) => r.toId))];
+      const targetIds = [
+        ...new Set([...outgoingRels.map((r) => r.toId), ...memberRels.map((r) => r.fromId)]),
+      ];
       const targetAssets = await Promise.all(targetIds.map((id) => api.getAsset(id)));
       const targetTypes = await Promise.all(targetAssets.map((asset) => resolveType(asset.typeId)));
       const typeByAssetId = new Map(targetAssets.map((asset, i) => [asset.id, targetTypes[i]]));
@@ -213,8 +231,20 @@ export function useBelvedereGraph() {
         }));
         const newEdges = rels.map(toEdge).filter((edge) => !existingEdgeIds.has(edge.id));
 
+        // A target reached only via this asset's *own outgoing* MEMBER_OF tag (assetId is the
+        // member, the target is a group it's part of) is additive, not owned — collapsing assetId
+        // later must not delete a group that exists independently of it, same as joinGroup's
+        // invariant above. Targets revealed via *incoming* MEMBER_OF (assetId is a group, the
+        // target is one of its members) keep normal expandedFrom bookkeeping: that's the
+        // collapsible-groups behavior itself — collapsing the group should re-hide its members.
+        const ownedTargetIds = new Set([
+          ...outgoingRels.filter((r) => r.kind !== "MEMBER_OF").map((r) => r.toId),
+          ...memberRels.map((r) => r.fromId),
+        ]);
         const expandedFrom = new Map(prev.expandedFrom);
-        for (const asset of newAssets) expandedFrom.set(asset.id, assetId);
+        for (const asset of newAssets) {
+          if (ownedTargetIds.has(asset.id)) expandedFrom.set(asset.id, assetId);
+        }
 
         return {
           ...prev,
@@ -280,6 +310,42 @@ export function useBelvedereGraph() {
     [state.nodes, resolveType],
   );
 
+  /**
+   * Tags an existing asset as MEMBER_OF an existing group — the "join an existing group" flow,
+   * as opposed to `attachHostedChild`'s "create a new asset hosted by this one". Deliberately
+   * doesn't record this in `expandedFrom`: membership is an additive overlay, not containment, so
+   * collapsing the member later must not delete a group that exists independently of it.
+   */
+  const joinGroup = useCallback(
+    async (memberId: string, group: Asset) => {
+      await api.createRelationship(memberId, "MEMBER_OF", group.id);
+      const type = await resolveType(group.typeId);
+
+      setState((prev) => {
+        const memberNode = prev.nodes.find((n) => n.id === memberId);
+        if (!memberNode) return prev;
+
+        const newEdge = toEdge({ fromId: memberId, kind: "MEMBER_OF", toId: group.id, properties: {} });
+        if (prev.edges.some((e) => e.id === newEdge.id)) return prev;
+
+        if (prev.nodes.some((n) => n.id === group.id)) {
+          return { ...prev, edges: [...prev.edges, newEdge] };
+        }
+
+        // Group isn't on canvas yet — place it near the member so the new membership is visible
+        // immediately, without an expandedFrom entry (see doc comment above).
+        const newNode: AssetNodeType = {
+          id: group.id,
+          type: "asset",
+          position: childPosition(memberNode.position, 0),
+          data: { asset: group, type, expanded: false },
+        };
+        return { ...prev, nodes: [...prev.nodes, newNode], edges: [...prev.edges, newEdge] };
+      });
+    },
+    [resolveType],
+  );
+
   const loadView = useCallback(
     async (viewId: string) => {
       setState((prev) => ({ ...prev, loading: true, error: null }));
@@ -324,5 +390,6 @@ export function useBelvedereGraph() {
     loadView,
     saveView,
     attachHostedChild,
+    joinGroup,
   };
 }

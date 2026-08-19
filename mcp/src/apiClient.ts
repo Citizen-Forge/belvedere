@@ -53,6 +53,8 @@ export const api = {
   deleteAsset: (id: string) => request<void>(`/api/assets/${id}`, { method: "DELETE" }),
 
   listRelationships: (assetId: string) => request<Relationship[]>(`/api/assets/${assetId}/relationships`),
+  // Incoming MEMBER_OF only — who has tagged themselves into this asset (usually a group).
+  listMembers: (assetId: string) => request<Relationship[]>(`/api/assets/${assetId}/members`),
   createRelationship: (
     fromId: string,
     kind: RelationshipKind,

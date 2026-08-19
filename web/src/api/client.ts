@@ -50,6 +50,9 @@ export const api = {
   deleteAsset: (id: string) => request<void>(`/api/assets/${id}`, { method: "DELETE" }),
 
   listRelationships: (assetId: string) => request<Relationship[]>(`/api/assets/${assetId}/relationships`),
+  // Incoming MEMBER_OF only — who has tagged themselves into this asset (expected to usually be a
+  // group). Reverse direction from listRelationships, which is outgoing-only.
+  listMembers: (assetId: string) => request<Relationship[]>(`/api/assets/${assetId}/members`),
   createRelationship: (
     fromId: string,
     kind: RelationshipKind,

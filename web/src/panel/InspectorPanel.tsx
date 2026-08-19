@@ -1,12 +1,100 @@
+import { useEffect, useState } from "react";
+import { api } from "../api/client";
+import type { Asset, Relationship } from "../api/types";
 import type { AssetNodeType } from "../graph/AssetNode";
 
 export interface InspectorPanelProps {
   node: AssetNodeType | undefined;
   onClose: () => void;
   onAddHostedChild: (parent: { id: string; name: string }) => void;
+  onJoinGroup: (member: { id: string }, group: Asset) => Promise<void>;
 }
 
-export function InspectorPanel({ node, onClose, onAddHostedChild }: InspectorPanelProps) {
+const GROUP_TYPE_ID = "core/group";
+
+/**
+ * "Part of groups": lists the asset's existing MEMBER_OF tags and offers a picker to join
+ * another existing group. Kept separate from HOSTS ("+ Add hosted asset" above) — joining a
+ * group tags an *existing* asset without touching its real HOSTS parent.
+ */
+function GroupMembership({
+  asset,
+  onJoin,
+}: {
+  asset: Asset;
+  onJoin: (group: Asset) => Promise<void>;
+}) {
+  const [groups, setGroups] = useState<Asset[]>([]);
+  const [memberships, setMemberships] = useState<Relationship[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setSelectedGroupId("");
+    Promise.all([api.listAssets({ typeId: GROUP_TYPE_ID }), api.listRelationships(asset.id)]).then(
+      ([allGroups, rels]) => {
+        if (cancelled) return;
+        setGroups(allGroups);
+        setMemberships(rels.filter((r) => r.kind === "MEMBER_OF"));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [asset.id]);
+
+  const availableGroups = groups.filter(
+    (g) => g.id !== asset.id && !memberships.some((m) => m.toId === g.id),
+  );
+  const selectedGroup = availableGroups.find((g) => g.id === selectedGroupId);
+
+  return (
+    <div className="inspector-panel__groups">
+      <h3>Groups</h3>
+      {memberships.length > 0 ? (
+        <ul className="inspector-panel__group-list">
+          {memberships.map((m) => (
+            <li key={m.toId}>{groups.find((g) => g.id === m.toId)?.name ?? m.toId}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="inspector-panel__unset">Not part of any group.</p>
+      )}
+      {availableGroups.length > 0 && (
+        <div className="inspector-panel__join-group">
+          <select value={selectedGroupId} onChange={(e) => setSelectedGroupId(e.target.value)}>
+            <option value="">Join group…</option>
+            {availableGroups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
+          <button
+            disabled={!selectedGroup}
+            onClick={async () => {
+              if (!selectedGroup) return;
+              try {
+                await onJoin(selectedGroup);
+                setMemberships((prev) => [
+                  ...prev,
+                  { fromId: asset.id, kind: "MEMBER_OF", toId: selectedGroup.id, properties: {} },
+                ]);
+                setSelectedGroupId("");
+              } catch (cause) {
+                window.alert(`Could not join group: ${(cause as Error).message}`);
+              }
+            }}
+          >
+            Join
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function InspectorPanel({ node, onClose, onAddHostedChild, onJoinGroup }: InspectorPanelProps) {
   if (!node) {
     return (
       <aside className="inspector-panel inspector-panel--empty">
@@ -59,6 +147,8 @@ export function InspectorPanel({ node, onClose, onAddHostedChild }: InspectorPan
       >
         + Add hosted asset
       </button>
+
+      <GroupMembership asset={asset} onJoin={(group) => onJoinGroup({ id: asset.id }, group)} />
     </aside>
   );
 }

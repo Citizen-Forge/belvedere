@@ -23,8 +23,14 @@ export type NewAsset = Omit<Asset, "id" | "layer" | "createdAt" | "updatedAt">;
  *   capability are independent facts about an asset.
  * CONNECTS_TO: a topology edge — physical (NIC to switch port) or logical
  *   (client to server) — not a containment relationship.
+ * MEMBER_OF: an asset tags itself into an organizational group, independent
+ *   of physical/logical containment — e.g. a GPU stays HOSTS-connected to its
+ *   real server *and* can separately be MEMBER_OF a "GPUs" group or a
+ *   free-floating cross-cutting "ALL GPUs" group. Many-to-many (an asset can
+ *   be a member of several groups at once), and unlike HOSTS it never hides
+ *   the member from its normal location — it's a purely additive overlay.
  */
-export type RelationshipKind = "HOSTS" | "PROVIDES" | "CONNECTS_TO";
+export type RelationshipKind = "HOSTS" | "PROVIDES" | "CONNECTS_TO" | "MEMBER_OF";
 
 export interface Relationship {
   fromId: string;

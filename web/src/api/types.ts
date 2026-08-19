@@ -35,7 +35,7 @@ export interface Asset {
   updatedAt: string;
 }
 
-export type RelationshipKind = "HOSTS" | "PROVIDES" | "CONNECTS_TO";
+export type RelationshipKind = "HOSTS" | "PROVIDES" | "CONNECTS_TO" | "MEMBER_OF";
 
 export interface Relationship {
   fromId: string;

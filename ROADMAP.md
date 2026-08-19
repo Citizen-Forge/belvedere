@@ -25,21 +25,43 @@ This also made the missing auto-layout item below concretely painful for the fir
 59-node real graph sprawls in a long strip with the current grid/child-offset layout, unlike every
 synthetic test graph so far which stayed small. Worth bumping priority on that item.
 
-## Collapsible groups — done
+## Groups — done (redesigned 2026-08-19)
 
-`core/group` (2026-08-19): a generic organizational container (e.g. an "array" group holding a
-NAS's data disks, or a "GPUs" group) — HOSTS-connect it under whatever it organizes, then
-HOSTS-connect its members to it. Needed **zero new mechanics**: `loadOverview`'s HOSTS-child
-exclusion (see `ARCHITECTURE.md`) and `expand()`'s per-node reveal already compose correctly for
-arbitrary nesting — a group's members stay hidden until the group itself is expanded, exactly like
-any other asset. Verified with a real nested scenario (server → group → 2 disks, plus a loose disk
-directly on the server) driven through the actual browser UI.
+First attempt (2026-08-19, same day) made group membership *only* a HOSTS edge — put a disk under
+an "array" group by re-parenting its HOSTS relationship from the server to the group. Rejected on
+review: it forces a choice between an asset's real physical/logical location and its organizational
+grouping, and can't express an asset belonging to *several* groups at once, or a cross-cutting
+group (e.g. "ALL GPUs" spanning multiple servers) that isn't hosted by any single parent.
 
-Known quirk: `core/group` has to extend `core/hardware` (every type must extend one of the three
-system roots), so it inherits `manufacturer`/`model` even though a pure organizational container
-has neither — they just show as unset in the inspector. Not fixing this now; it'd need real
-type-system work (per-type attribute exclusion, or a way to mark a type "non-physical" despite its
-root) for a purely cosmetic issue.
+Replaced with a second, orthogonal relationship kind: **`MEMBER_OF`** (`src/instances/types.ts`).
+An asset's HOSTS parent stays untouched — MEMBER_OF is a purely additive tag alongside it:
+
+- A GPU stays `HOSTS`-connected to its real server (ground truth, unchanged) **and** can separately
+  be `MEMBER_OF` a "GPUs" group hosted under that same server (an organizational cluster local to
+  that server) **and** `MEMBER_OF` a second, free-floating "ALL GPUs" group with no HOSTS parent at
+  all (a cross-cutting collection — free-floating groups just surface directly in the physical
+  overview, since nothing hosts them to hide them).
+- Many-to-many: nothing stops an asset joining several groups, or a group being MEMBER_OF another
+  group.
+- Membership is stored on the member, not the group (`member -[MEMBER_OF]-> group`), so listing a
+  group's members means querying *incoming* edges — the new `listMembers()` /
+  `GET /api/assets/:id/members` (backend) and `expand()` (frontend, which now fetches both a
+  node's outgoing relationships *and* its incoming members before deciding what to reveal).
+- `HOSTS`'s cycle-prevention (`assertNoHostsCycle`) is deliberately **not** extended to MEMBER_OF —
+  the bug it guards against (a cycle makes every member permanently unreachable, since HOSTS is the
+  only thing that drives the expand/collapse hiding) doesn't apply to a purely additive edge that
+  never hides anything.
+- New UI: the inspector's "Groups" section lists an asset's current memberships and a picker to
+  join an *existing* group — the first UI affordance in Belvedere for connecting two already-created
+  assets, as opposed to creating a new hosted child.
+
+`core/group` (unchanged type, still extends `core/hardware` for the same known cosmetic reason as
+before — inherits unused `manufacturer`/`model`) is now the type used on both sides: hosted locally
+under whatever it organizes, or created free-floating for a cross-cutting collection.
+
+Verified end-to-end in the real browser UI: server hosting a "GPUs" group and 3 GPUs, one GPU also
+tagged into a free-floating "ALL GPUs" group, the server itself tagged into a free-floating
+"servers" group, and the join-group picker used to add a fresh membership live.
 
 ## Other known gaps
 

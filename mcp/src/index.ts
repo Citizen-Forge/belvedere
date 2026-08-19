@@ -29,6 +29,8 @@ import {
   deleteRelationshipSchema,
   listAssetRelationships,
   listAssetRelationshipsSchema,
+  listGroupMembers,
+  listGroupMembersSchema,
 } from "./tools/relationshipTools.js";
 
 const server = new McpServer({ name: "belvedere", version: "0.1.0" });
@@ -130,16 +132,25 @@ server.registerTool(
 server.registerTool(
   "list_asset_relationships",
   {
-    description: "List relationships originating from an asset (HOSTS/PROVIDES/CONNECTS_TO edges where it's the source).",
+    description: "List relationships originating from an asset (HOSTS/PROVIDES/CONNECTS_TO/MEMBER_OF edges where it's the source).",
     inputSchema: listAssetRelationshipsSchema.shape,
   },
   toolCallback((input) => listAssetRelationships(input, api)),
 );
 
 server.registerTool(
+  "list_group_members",
+  {
+    description: "List assets tagged MEMBER_OF a given asset — the reverse direction from list_asset_relationships. Use on a group to find its members, since membership is stored on the member, not the group.",
+    inputSchema: listGroupMembersSchema.shape,
+  },
+  toolCallback((input) => listGroupMembers(input, api)),
+);
+
+server.registerTool(
   "create_relationship",
   {
-    description: "Connect two existing assets with a typed relationship (HOSTS/PROVIDES/CONNECTS_TO). Both assets must already exist — create them first.",
+    description: "Connect two existing assets with a typed relationship (HOSTS/PROVIDES/CONNECTS_TO/MEMBER_OF). Both assets must already exist — create them first. Use MEMBER_OF to tag an asset into an organizational group without disturbing its real HOSTS parent.",
     inputSchema: createRelationshipSchema.shape,
   },
   toolCallback((input) => createRelationship(input, api)),
