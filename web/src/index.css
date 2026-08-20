@@ -273,8 +273,60 @@ input, select {
 
 .inspector-panel__groups,
 .inspector-panel__members,
-.inspector-panel__hosted {
+.inspector-panel__hosted,
+.inspector-panel__connections {
   margin-top: 16px;
+}
+
+.inspector-panel__connection-list {
+  margin: 0 0 8px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.inspector-panel__connection-list li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.inspector-panel__connection-list li:last-child {
+  border-bottom: none;
+}
+
+.inspector-panel__connection-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.inspector-panel__connection-notes {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.inspector-panel__connection-notes input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.inspector-panel__connection-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.inspector-panel__connection-picker select {
+  flex: 1;
+  min-width: 100px;
+}
+
+.inspector-panel__connection-picker input {
+  flex: 1;
+  min-width: 100px;
 }
 
 .inspector-panel__group-list {

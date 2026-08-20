@@ -55,6 +55,8 @@ export const api = {
   listRelationships: (assetId: string) => request<Relationship[]>(`/api/assets/${assetId}/relationships`),
   // Incoming MEMBER_OF only — who has tagged themselves into this asset (usually a group).
   listMembers: (assetId: string) => request<Relationship[]>(`/api/assets/${assetId}/members`),
+  // CONNECTS_TO in either direction — a topology edge has no privileged side, unlike HOSTS/MEMBER_OF.
+  listConnections: (assetId: string) => request<Relationship[]>(`/api/assets/${assetId}/connections`),
   createRelationship: (
     fromId: string,
     kind: RelationshipKind,

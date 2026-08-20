@@ -163,3 +163,29 @@ test("create() still allows a non-HOSTS relationship between assets already HOST
   const relsFromChild = await relationships.listFrom(child.id);
   assert.ok(relsFromChild.some((r) => r.kind === "CONNECTS_TO" && r.toId === parent.id));
 });
+
+test("listConnections() finds CONNECTS_TO from either side, unlike listFrom which is outgoing-only", async () => {
+  const nic = await makeAsset("core/network-interface", "conn-nic-01", "physical");
+  const switch1 = await makeAsset("core/switch", "conn-switch-01", "physical");
+  const switch2 = await makeAsset("core/switch", "conn-switch-02", "physical");
+
+  await relationships.create(nic.id, "CONNECTS_TO", switch1.id, { notes: "switch port 3" });
+  await relationships.create(switch2.id, "CONNECTS_TO", switch1.id, { notes: "uplink" });
+
+  // switch1 is the *target* of both edges — listFrom(switch1) would see neither, but
+  // listConnections must surface both, since a topology edge has no privileged side.
+  const fromSwitch1 = await relationships.listFrom(switch1.id);
+  assert.equal(fromSwitch1.length, 0);
+
+  const connections = await relationships.listConnections(switch1.id);
+  assert.equal(connections.length, 2);
+  const byOtherEnd = Object.fromEntries(connections.map((c) => [c.fromId, c.properties]));
+  assert.deepEqual(byOtherEnd[nic.id], { notes: "switch port 3" });
+  assert.deepEqual(byOtherEnd[switch2.id], { notes: "uplink" });
+
+  // From the *other* side (nic), the same edge is found too, with its real stored direction intact.
+  const fromNicSide = await relationships.listConnections(nic.id);
+  assert.equal(fromNicSide.length, 1);
+  assert.equal(fromNicSide[0].fromId, nic.id);
+  assert.equal(fromNicSide[0].toId, switch1.id);
+});

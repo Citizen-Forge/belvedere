@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyNodeChanges, type Edge, type NodeChange } from "@xyflow/react";
 import { api } from "../api/client";
-import { GROUP_TYPE_ID, type Asset, type Relationship, type ResolvedType, type SavedView } from "../api/types";
+import {
+  GROUP_TYPE_ID,
+  type Asset,
+  type AttributeValue,
+  type Relationship,
+  type RelationshipKind,
+  type ResolvedType,
+  type SavedView,
+} from "../api/types";
 import type { AssetNodeType } from "./AssetNode";
 import { autoLayout } from "./autoLayout";
 import { childPosition } from "./layout";
@@ -28,11 +36,15 @@ const initialState: GraphState = {
 };
 
 function toEdge(rel: Relationship): Edge {
+  // A free-text `notes` property (e.g. "switch port 3" on a CONNECTS_TO) shows right on the
+  // canvas edge, not just in the inspector's Connections list — that's the whole point of being
+  // able to attach it, not something worth burying behind an extra click to discover.
+  const notes = typeof rel.properties.notes === "string" ? rel.properties.notes : undefined;
   return {
     id: `${rel.fromId}-${rel.kind}-${rel.toId}`,
     source: rel.fromId,
     target: rel.toId,
-    label: rel.kind,
+    label: notes ? `${rel.kind}: ${notes}` : rel.kind,
     // MEMBER_OF is a tag, not containment — dashed to read as an overlay distinct from a solid
     // HOSTS/PROVIDES/CONNECTS_TO line at a glance.
     style: rel.kind === "MEMBER_OF" ? { strokeDasharray: "4 4" } : undefined,
@@ -441,67 +453,106 @@ export function useBelvedereGraph() {
   );
 
   /**
-   * Tags an existing asset as MEMBER_OF an existing group — the "join an existing group" flow,
-   * as opposed to `attachHostedChild`'s "create a new asset hosted by this one". Deliberately
-   * doesn't record this in `expandedFrom`: membership is an additive overlay, not containment, so
-   * collapsing the member later must not delete a group that exists independently of it.
+   * Shared core of `joinGroup` and `connectAssets`: creates a relationship of the given kind
+   * between two existing assets and places either side onto the canvas if missing, anchored near
+   * whichever side is already visible (or the origin, if neither is — same as the top-level
+   * "+ Add asset" flow). Neither newly-added node gets an `expandedFrom` entry: a tag or a
+   * topology link is additive, not containment, so collapsing some unrelated nearby node later
+   * must not delete either one. Always upserts the edge (replaces it if the id already exists
+   * with an identical id but possibly different `properties`) rather than no-op'ing when it's
+   * already present — needed for editing a `CONNECTS_TO` connection's notes in place, and
+   * harmless for `MEMBER_OF`, which has no properties that ever change.
    */
-  const joinGroup = useCallback(
-    async (member: Asset, group: Asset) => {
-      await api.createRelationship(member.id, "MEMBER_OF", group.id);
-      // Either side (or neither) may already be on canvas — the "asset joins a group" flow always
-      // has the member visible (it's the selected node) but not necessarily the group; the group's
-      // own "add an existing asset as a member" flow is the reverse: the group is visible, but the
-      // chosen member could be anywhere in the whole inventory, including nested under something
-      // that's never been expanded. Resolve both types regardless of which turns out unneeded.
-      const [memberType, groupType] = await Promise.all([
-        resolveType(member.typeId),
-        resolveType(group.typeId),
-      ]);
+  const linkAssets = useCallback(
+    async (
+      fromAsset: Asset,
+      kind: RelationshipKind,
+      toAsset: Asset,
+      properties?: Record<string, AttributeValue>,
+    ) => {
+      await api.createRelationship(fromAsset.id, kind, toAsset.id, properties);
+      // Either side (or neither) may already be on canvas — e.g. an asset joining a group always
+      // has itself visible (it's the selected node) but not necessarily the group; the group's own
+      // "add an existing asset as a member" flow is the reverse. Resolve both types regardless of
+      // which turns out unneeded.
+      const [fromType, toType] = await Promise.all([resolveType(fromAsset.typeId), resolveType(toAsset.typeId)]);
 
       setState((prev) => {
         const existingIds = new Set(prev.nodes.map((n) => n.id));
-        const newEdge = toEdge({ fromId: member.id, kind: "MEMBER_OF", toId: group.id, properties: {} });
-        const edgeExists = prev.edges.some((e) => e.id === newEdge.id);
-        if (edgeExists && existingIds.has(member.id) && existingIds.has(group.id)) return prev;
+        const newEdge = toEdge({ fromId: fromAsset.id, kind, toId: toAsset.id, properties: properties ?? {} });
 
-        // Anchor new nodes near whichever side is already visible; if neither is, there's no
-        // meaningful "near" — just drop them at the origin, same as the top-level "+ Add asset" flow.
         const anchorPosition =
-          prev.nodes.find((n) => n.id === member.id)?.position ??
-          prev.nodes.find((n) => n.id === group.id)?.position ??
+          prev.nodes.find((n) => n.id === fromAsset.id)?.position ??
+          prev.nodes.find((n) => n.id === toAsset.id)?.position ??
           { x: 0, y: 0 };
 
         const newNodes: AssetNodeType[] = [];
-        if (!existingIds.has(member.id)) {
+        if (!existingIds.has(fromAsset.id)) {
           newNodes.push({
-            id: member.id,
+            id: fromAsset.id,
             type: "asset",
             position: childPosition(anchorPosition, newNodes.length),
-            data: { asset: member, type: memberType, expanded: false },
+            data: { asset: fromAsset, type: fromType, expanded: false },
           });
         }
-        if (!existingIds.has(group.id)) {
+        if (!existingIds.has(toAsset.id)) {
           newNodes.push({
-            id: group.id,
+            id: toAsset.id,
             type: "asset",
             position: childPosition(anchorPosition, newNodes.length),
-            data: { asset: group, type: groupType, expanded: false },
+            data: { asset: toAsset, type: toType, expanded: false },
           });
         }
 
-        // Neither newly-added node gets an expandedFrom entry — membership is additive, not
-        // containment (see the doc comment on this invariant elsewhere in this file), so neither
-        // should vanish just because some unrelated node it's near later gets collapsed.
+        const edgeExists = prev.edges.some((e) => e.id === newEdge.id);
         return {
           ...prev,
           nodes: [...prev.nodes, ...newNodes],
-          edges: edgeExists ? prev.edges : [...prev.edges, newEdge],
+          edges: edgeExists ? prev.edges.map((e) => (e.id === newEdge.id ? newEdge : e)) : [...prev.edges, newEdge],
         };
       });
     },
     [resolveType],
   );
+
+  /**
+   * Tags an existing asset as MEMBER_OF an existing group — the "join an existing group" flow,
+   * as opposed to `attachHostedChild`'s "create a new asset hosted by this one".
+   */
+  const joinGroup = useCallback(
+    (member: Asset, group: Asset) => linkAssets(member, "MEMBER_OF", group),
+    [linkAssets],
+  );
+
+  /**
+   * Creates (or updates) a CONNECTS_TO topology link between two existing assets (e.g. a NIC to a
+   * switch, a switch to another switch) — the general "wire two things together" flow, as opposed
+   * to HOSTS (containment) or MEMBER_OF (organizational tagging). Takes a full `properties` object,
+   * not just a `notes` string — the backend's `create()` does `SET r.properties = $properties`
+   * (a full replace, not a merge), so calling this again for the same pair to edit its notes must
+   * pass along any *other* properties the edge already had (e.g. one set via the MCP server, which
+   * supports arbitrary properties like `{ switchPort: 3 }`), or they'd be silently wiped — the
+   * caller is expected to spread the connection's existing `properties` in itself. CONNECTS_TO has
+   * no privileged direction (see `listConnections` on the backend), so `a`/`b` naming is arbitrary
+   * — the edge is simply stored `a -> b`.
+   */
+  const connectAssets = useCallback(
+    (a: Asset, b: Asset, properties?: Record<string, AttributeValue>) =>
+      linkAssets(a, "CONNECTS_TO", b, properties),
+    [linkAssets],
+  );
+
+  /**
+   * Removes a CONNECTS_TO edge — the reverse of `connectAssets`. Only ever removes the one edge,
+   * never either node, same philosophy as `leaveGroup`/`unhost`. Takes the edge's actual stored
+   * `fromId`/`toId` (not just "the two assets involved," since CONNECTS_TO could be stored either
+   * way) so the right relationship gets deleted on the backend.
+   */
+  const disconnectAssets = useCallback(async (fromId: string, toId: string) => {
+    await api.deleteRelationship(fromId, "CONNECTS_TO", toId);
+    const edgeId = toEdge({ fromId, kind: "CONNECTS_TO", toId, properties: {} }).id;
+    setState((prev) => ({ ...prev, edges: prev.edges.filter((e) => e.id !== edgeId) }));
+  }, []);
 
   /**
    * Removes an existing MEMBER_OF tag — the reverse of `joinGroup`. Only ever removes the one
@@ -633,6 +684,8 @@ export function useBelvedereGraph() {
     joinGroup,
     leaveGroup,
     unhost,
+    connectAssets,
+    disconnectAssets,
     deleteAsset,
     arrange,
   };

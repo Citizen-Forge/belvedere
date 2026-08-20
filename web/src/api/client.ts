@@ -53,6 +53,8 @@ export const api = {
   // Incoming MEMBER_OF only — who has tagged themselves into this asset (expected to usually be a
   // group). Reverse direction from listRelationships, which is outgoing-only.
   listMembers: (assetId: string) => request<Relationship[]>(`/api/assets/${assetId}/members`),
+  // CONNECTS_TO in either direction — a topology edge has no privileged side, unlike HOSTS/MEMBER_OF.
+  listConnections: (assetId: string) => request<Relationship[]>(`/api/assets/${assetId}/connections`),
   createRelationship: (
     fromId: string,
     kind: RelationshipKind,

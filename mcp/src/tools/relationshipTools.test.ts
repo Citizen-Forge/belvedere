@@ -5,6 +5,7 @@ import {
   deleteRelationship,
   listAssetRelationships,
   listGroupMembers,
+  listConnections,
 } from "./relationshipTools.js";
 import type { api } from "../apiClient.js";
 
@@ -37,6 +38,22 @@ test("listGroupMembers queries incoming MEMBER_OF edges via listMembers, not lis
   const result = await listGroupMembers({ assetId: "group-1" }, api);
   assert.equal(receivedId, "group-1");
   assert.deepEqual(result, [{ fromId: "gpu-1", kind: "MEMBER_OF", toId: "group-1", properties: {} }]);
+});
+
+test("listConnections queries CONNECTS_TO from either side via listConnections, not listRelationships", async () => {
+  let receivedId: string | undefined;
+  const api = fakeApi({
+    listConnections: async (assetId) => {
+      receivedId = assetId;
+      return [{ fromId: "switch-1", kind: "CONNECTS_TO", toId: "nic-1", properties: { notes: "port 3" } }];
+    },
+  });
+
+  const result = await listConnections({ assetId: "nic-1" }, api);
+  assert.equal(receivedId, "nic-1");
+  assert.deepEqual(result, [
+    { fromId: "switch-1", kind: "CONNECTS_TO", toId: "nic-1", properties: { notes: "port 3" } },
+  ]);
 });
 
 test("createRelationship forwards fromId/kind/toId/properties", async () => {

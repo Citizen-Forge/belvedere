@@ -490,7 +490,7 @@ describe("useBelvedereGraph", () => {
     await waitFor(() => {
       expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-1", "server-1"]);
     });
-    expect(api.createRelationship).toHaveBeenCalledWith("server-1", "MEMBER_OF", "group-1");
+    expect(api.createRelationship).toHaveBeenCalledWith("server-1", "MEMBER_OF", "group-1", undefined);
     expect(result.current.edges.some((e) => e.source === "server-1" && e.target === "group-1")).toBe(true);
 
     // Membership is additive, not containment: collapsing (toggling expand on) the member must
@@ -526,7 +526,7 @@ describe("useBelvedereGraph", () => {
     await waitFor(() => {
       expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-1", "hidden-disk-1"]);
     });
-    expect(api.createRelationship).toHaveBeenCalledWith("hidden-disk-1", "MEMBER_OF", "group-1");
+    expect(api.createRelationship).toHaveBeenCalledWith("hidden-disk-1", "MEMBER_OF", "group-1", undefined);
     expect(
       result.current.edges.some((e) => e.source === "hidden-disk-1" && e.target === "group-1"),
     ).toBe(true);
@@ -705,5 +705,104 @@ describe("useBelvedereGraph", () => {
     );
     // The inspector panel closes itself — the deleted node can no longer be the selection.
     expect(result.current.selectedAssetId).toBeNull();
+  });
+
+  it("connectAssets creates a CONNECTS_TO link with notes and places either side on canvas if missing", async () => {
+    const nic = disk("nic-1"); // stand-in asset, type doesn't matter for this test
+    const switch1 = disk("switch-1");
+    vi.mocked(api.listAssets).mockResolvedValue([nic]);
+    vi.mocked(api.listRelationships).mockResolvedValue([]);
+    vi.mocked(api.listMembers).mockResolvedValue([]);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+    vi.mocked(api.createRelationship).mockResolvedValue({
+      fromId: "nic-1",
+      kind: "CONNECTS_TO",
+      toId: "switch-1",
+      properties: { notes: "switch port 3" },
+    });
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.nodes.map((n) => n.id)).toEqual(["nic-1"]);
+
+    await result.current.connectAssets(nic, switch1, { notes: "switch port 3" });
+
+    expect(api.createRelationship).toHaveBeenCalledWith("nic-1", "CONNECTS_TO", "switch-1", {
+      notes: "switch port 3",
+    });
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["nic-1", "switch-1"]);
+    });
+    const edge = result.current.edges.find((e) => e.source === "nic-1" && e.target === "switch-1");
+    // The notes show right on the canvas edge, not just in the inspector's Connections list.
+    expect(edge?.label).toBe("CONNECTS_TO: switch port 3");
+  });
+
+  it("connectAssets called again for the same pair updates the edge in place (editing a connection's notes)", async () => {
+    const nic = disk("nic-1");
+    const switch1 = disk("switch-1");
+    vi.mocked(api.listAssets).mockResolvedValue([nic, switch1]);
+    vi.mocked(api.listRelationships).mockResolvedValue([]);
+    vi.mocked(api.listMembers).mockResolvedValue([]);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+    vi.mocked(api.createRelationship).mockResolvedValue({
+      fromId: "nic-1",
+      kind: "CONNECTS_TO",
+      toId: "switch-1",
+      properties: {},
+    });
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await result.current.connectAssets(nic, switch1, { notes: "switch port 3" });
+    await waitFor(() => {
+      expect(
+        result.current.edges.find((e) => e.source === "nic-1" && e.target === "switch-1")?.label,
+      ).toBe("CONNECTS_TO: switch port 3");
+    });
+    // Still exactly one edge between them, and the node count hasn't grown — this is an update,
+    // not a second parallel connection.
+    expect(result.current.nodes.length).toBe(2);
+
+    await result.current.connectAssets(nic, switch1, { notes: "actually port 5" });
+    await waitFor(() => {
+      const updated = result.current.edges.find((e) => e.source === "nic-1" && e.target === "switch-1");
+      expect(updated?.label).toBe("CONNECTS_TO: actually port 5");
+    });
+    expect(result.current.edges.filter((e) => e.source === "nic-1" && e.target === "switch-1").length).toBe(1);
+    expect(result.current.nodes.length).toBe(2);
+  });
+
+  it("disconnectAssets removes only the CONNECTS_TO edge, leaving both nodes untouched", async () => {
+    const nic = disk("nic-1");
+    const switch1 = disk("switch-1");
+    vi.mocked(api.listAssets).mockResolvedValue([nic, switch1]);
+    vi.mocked(api.listRelationships).mockResolvedValue([]);
+    vi.mocked(api.listMembers).mockResolvedValue([]);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+    vi.mocked(api.createRelationship).mockResolvedValue({
+      fromId: "nic-1",
+      kind: "CONNECTS_TO",
+      toId: "switch-1",
+      properties: {},
+    });
+    vi.mocked(api.deleteRelationship).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await result.current.connectAssets(nic, switch1);
+    await waitFor(() => {
+      expect(result.current.edges.some((e) => e.source === "nic-1" && e.target === "switch-1")).toBe(true);
+    });
+
+    await result.current.disconnectAssets("nic-1", "switch-1");
+
+    expect(api.deleteRelationship).toHaveBeenCalledWith("nic-1", "CONNECTS_TO", "switch-1");
+    await waitFor(() => {
+      expect(result.current.edges.some((e) => e.source === "nic-1" && e.target === "switch-1")).toBe(false);
+    });
+    expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["nic-1", "switch-1"]);
   });
 });

@@ -128,6 +128,38 @@ introducing a first "the selected node might vanish out from under an in-flight 
 to it, and `attachHostedChild` (the "+ Add hosted asset" flow) had the identical gap — both fixed
 with the same "re-check against live state, bail if gone" guard.
 
+## Connections (CONNECTS_TO topology links) — done (2026-08-20)
+
+Asked for directly: "a way to add connections between entities... the network port on the unraid
+server will connect to a switch... I might want to add notes to the connection (which switch port
+it is)." `CONNECTS_TO` already existed as a relationship kind (used internally for the
+network-topology example) but had **zero UI anywhere** to create one between two existing assets —
+the only "connect two existing things" affordance in the whole app was groups' `MEMBER_OF`.
+
+Added a full `Connections` section to the inspector, shown on *every* asset (not group-scoped —
+`CONNECTS_TO` is a general topology feature): lists existing connections with an editable "Notes"
+field per one (free text, e.g. "switch port 3" — shown right on the canvas edge too, not just
+buried in the panel), and a picker to connect to any other existing asset. Backed by a new
+`listConnections` (backend + web client + MCP tool, for AI-discovery parity with the rest of the
+relationship kinds) that queries `CONNECTS_TO` in *either* direction via an undirected Cypher
+pattern — unlike `HOSTS`/`MEMBER_OF`, a topology edge (a cable) has no privileged side, so a
+connection made from asset A's panel shows up on asset B's panel too, symmetrically.
+
+`joinGroup`'s "place either side on canvas if missing, upsert the edge" logic was generalized into
+a shared `linkAssets` helper once `connectAssets` needed the identical behavior for a second
+relationship kind — `joinGroup` is now a one-line wrapper over it.
+
+Code review caught two real bugs before shipping: (1) editing a connection's notes called the
+backend's `create()`, which fully *replaces* `properties` on write rather than merging — sending
+only the new notes would silently delete any other property already on that edge (e.g. one set via
+the MCP server, which supports arbitrary properties like `{ switchPort: 3 }`); fixed by spreading
+the connection's existing properties before adding the updated notes. (2) Two `CONNECTS_TO` edges
+between the same pair in opposite directions would collide on the same React list key (keyed only
+by "the other asset's id," not direction) and share notes-editing state, letting an edit to one
+silently affect the other; fixed with a direction-inclusive key. Verified live: NIC → switch → a
+second switch, notes visible on the canvas edge, editing from either endpoint's own panel, and
+confirmed via direct API check that non-notes properties survive an edit.
+
 ## Custom attributes, live external data, and alerting — not started, design captured 2026-08-20
 
 The original project brief mentioned "status monitoring" with no further scope. The user has now

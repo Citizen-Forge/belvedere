@@ -38,6 +38,21 @@ export function listGroupMembers(input: z.infer<typeof listGroupMembersSchema>, 
   return api.listMembers(input.assetId);
 }
 
+export const listConnectionsSchema = z.object({
+  assetId: z
+    .string()
+    .describe(
+      "List CONNECTS_TO relationships involving this asset, from *either* side — unlike " +
+        "list_asset_relationships (outgoing only) or list_group_members (incoming only), a " +
+        "topology edge has no privileged direction, so a connection shows up here regardless of " +
+        "which asset happens to be the relationship's stored 'from' side.",
+    ),
+});
+
+export function listConnections(input: z.infer<typeof listConnectionsSchema>, api: Api) {
+  return api.listConnections(input.assetId);
+}
+
 export const createRelationshipSchema = z.object({
   fromId: z.string().describe("Source asset id."),
   kind: relationshipKind,

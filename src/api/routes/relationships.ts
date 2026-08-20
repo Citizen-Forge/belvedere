@@ -23,6 +23,13 @@ export function registerRelationshipRoutes(app: FastifyInstance, ctx: AppContext
     return ctx.relationships.listMembers(id);
   });
 
+  // CONNECTS_TO in either direction — unlike HOSTS/MEMBER_OF, a topology edge has no privileged
+  // side, so this asset's connections show regardless of which way each one happens to be stored.
+  app.get("/api/assets/:id/connections", async (request) => {
+    const { id } = request.params as { id: string };
+    return ctx.relationships.listConnections(id);
+  });
+
   app.delete("/api/assets/:id/relationships/:kind/:toId", async (request, reply) => {
     const { id, kind: rawKind, toId } = request.params as {
       id: string;

@@ -124,6 +124,28 @@ export class RelationshipRepository {
     });
   }
 
+  // CONNECTS_TO is a topology edge (a cable, a logical link) with no privileged direction — unlike
+  // HOSTS's containment or MEMBER_OF's membership, "which side is fromId" carries no real meaning,
+  // so callers shouldn't have to know or care which way a given connection happens to be stored.
+  // Matches CONNECTS_TO in *either* direction from assetId (undirected Cypher pattern), returning
+  // each edge's actual stored fromId/toId as-is so callers that do need it (e.g. to remove the
+  // exact edge) still have it.
+  async listConnections(assetId: string): Promise<Relationship[]> {
+    return withSession(this.driver, async (session) => {
+      const result = await session.run(
+        `MATCH (a:Asset {id: $assetId})-[r:CONNECTS_TO]-(b:Asset)
+         RETURN startNode(r).id AS fromId, endNode(r).id AS toId, r.properties AS properties`,
+        { assetId },
+      );
+      return result.records.map((record) => ({
+        fromId: record.get("fromId") as string,
+        kind: "CONNECTS_TO" as RelationshipKind,
+        toId: record.get("toId") as string,
+        properties: JSON.parse(record.get("properties") ?? "{}"),
+      }));
+    });
+  }
+
   async remove(fromId: string, kind: RelationshipKind, toId: string): Promise<void> {
     const relType = cypherRelForKind(kind);
     await withSession(this.driver, (session) =>

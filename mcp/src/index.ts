@@ -31,6 +31,8 @@ import {
   listAssetRelationshipsSchema,
   listGroupMembers,
   listGroupMembersSchema,
+  listConnections,
+  listConnectionsSchema,
 } from "./tools/relationshipTools.js";
 
 const server = new McpServer({ name: "belvedere", version: "0.1.0" });
@@ -145,6 +147,15 @@ server.registerTool(
     inputSchema: listGroupMembersSchema.shape,
   },
   toolCallback((input) => listGroupMembers(input, api)),
+);
+
+server.registerTool(
+  "list_connections",
+  {
+    description: "List CONNECTS_TO relationships involving an asset, from either side — unlike list_asset_relationships (outgoing only), a topology edge has no privileged direction.",
+    inputSchema: listConnectionsSchema.shape,
+  },
+  toolCallback((input) => listConnections(input, api)),
 );
 
 server.registerTool(
