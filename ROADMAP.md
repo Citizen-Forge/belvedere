@@ -87,12 +87,87 @@ node, since a member usually still belongs on the canvas for other reasons. Wire
 every entry in both `InspectorPanel`'s "Groups" list (leave a group) and "Members" list (remove a
 member), the two directions `joinGroup` already supported.
 
+**Fixed (2026-08-20): couldn't remove a group nested inside another group.** Real gap hit live:
+"+ Add hosted group" (used to nest one group under another, e.g. an "Array" sub-group under
+"Drives") always creates a `HOSTS` edge — the same as "+ Add hosted asset" — not `MEMBER_OF`, so the
+nested group never appeared in the parent's "Members" list (which only ever shows `MEMBER_OF`) and
+had no way to be un-nested short of deleting it outright. Added `graph.unhost(parent, child)`
+(removes one `HOSTS` edge, same "only the edge, never either node" philosophy as `leaveGroup`, and
+also clears the child's `expandedFrom` entry if it pointed at that exact parent, so a later collapse
+of the old parent doesn't hide a node it no longer actually hosts) and a new "Hosted" section in the
+inspector, shown only for groups (same scoping as "Members" — an ordinary asset's `HOSTS` children
+are better managed via canvas expand/collapse and can run into the dozens, which would clutter this
+panel far more than help).
+
+## Custom attributes, live external data, and alerting — not started, design captured 2026-08-20
+
+The original project brief mentioned "status monitoring" with no further scope. The user has now
+given a concrete design for it, building in three layers where each depends on the one before it.
+None of this is built yet — capturing it here in enough detail to actually start from, rather than
+losing it back to "needs a design conversation."
+
+**1. Per-instance custom attributes.** Today every attribute an asset can have comes entirely from
+its *type* (`resolveType`'s merged `resolvedAttributes`) — `validateAttributes` rejects any key not
+in that set. The ask: from any entity's inspector, add (and remove) attributes that belong to *that
+instance only*, not the type — e.g. an "array type" or "total capacity" field on one specific group,
+without every group getting it. This needs a real schema addition, not a UI-only change: an
+`Asset`-level list of custom attribute definitions (key/label/dataType, same shape as
+`AttributeDefinition`) stored alongside `attributeValues`, merged with — not replacing —
+`resolvedAttributes` for display/validation purposes. Needs new API routes (add/remove a custom
+attribute definition on a specific asset) and an inspector UI (a "+ Add attribute" affordance,
+probably in the existing Attributes table, with per-row remove for anything not part of the type).
+
+**2. Dynamic (externally-sourced) attribute values.** An attribute — custom or eventually even a
+type-defined one — can pull its live value from an external source instead of a literal stored
+value. Concretely: on a drive, add a "current capacity" field, and either type a value directly or
+pick a previously-configured Prometheus (or Grafana) source and enter a PromQL query that resolves
+it. Needs:
+  - A **data source** concept in Settings (parallel to the existing "Libraries" pattern —
+    `LibrarySourceRepository`/`routes/libraries.ts` — a `DataSourceRepository` storing name, kind
+    (prometheus/grafana/…), base URL, and whatever auth it needs), with CRUD routes and a Settings UI
+    page (nothing like this exists yet — there's no Settings screen at all currently, just the
+    Views menu and the graph canvas).
+  - A way to bind one attribute to `{ sourceId, query }` instead of (or alongside) a literal value —
+    likely a new field on the attribute value shape, not just reusing `AttributeValue` as-is, since a
+    dynamic binding needs to survive independent of whatever the last-fetched value was.
+  - A backend query-execution path: an HTTP client for Prometheus's `/api/v1/query` (and later
+    Grafana's datasource-proxy API), with real error handling for an unreachable/misconfigured
+    source — this is the first place Belvedere would depend on a live third-party service being up
+    to render correctly, which is a meaningfully different failure mode than anything today (every
+    existing read is against Belvedere's own Neo4j).
+  - A refresh strategy: fetch on-demand when the inspector is open (simplest, but a dashboard full of
+    dynamic values would mean a burst of concurrent queries), a poll interval with caching, or both.
+    Needs an actual decision before building, not just "figure it out as you go" — affects the data
+    model (does Belvedere ever *store* a fetched value, or always re-query live?).
+
+**3. Alert thresholds + status propagation.** On a dynamic (numeric) attribute, set a threshold
+(e.g. capacity < 10% free) with a severity. When breached, the asset should render differently
+wherever it's shown (the user's example: turn red). The status should also **percolate upward**
+through the `HOSTS` tree — a drive at 5% free should make the unraid server it belongs to show
+amber, signaling "something under here needs attention" without necessarily hiding what. This is a
+graph aggregation problem, not just a per-node flag: computing "worst status among all descendants"
+for every ancestor of every alerting node. Needs a decision on when that's computed — live at render
+time (a HOSTS-tree traversal per visible node, potentially expensive on a large graph like the real
+59+-node Unraid one) vs. a materialized/cached rollup recomputed on a schedule or when relevant data
+changes. Also needs an actual visual language (the color scale itself, and where it renders — node
+border color on the canvas is the obvious first place; "any dashboards it shows on" implies
+something beyond the single graph canvas that exists today, which is its own open question: is a
+"dashboard" just a `SavedView` rendered with status overlays, or a genuinely new artifact type?
+Worth resolving before building rather than guessing).
+
+**Suggested build order, since each layer is genuinely a prerequisite for the next**: (1) custom
+attributes first — useful standalone, and dynamic attributes are really "a custom attribute whose
+value has a different source," so building custom attributes without the dynamic-source concept
+first keeps the schema/API change small and reviewable on its own. (2) Data sources + dynamic
+values next, once there's something to attach them to. (3) Alerting/propagation last, since it's
+meaningless without real live data to threshold against, and its own biggest open question (how/
+where status renders) benefits from having actual dynamic attributes in the app to design against
+rather than guessing in the abstract.
+
 ## Other known gaps
 
 - **Publishing a type back to a library from inside the app.** Currently a manual fork-and-PR
   workflow (see belvedere-library's README) — there's no in-app "publish this custom type" flow.
-- **Status monitoring.** Mentioned in the original project brief, never scoped beyond that. Needs
-  a real design conversation (health checks? uptime pings? metric ingestion?) before building.
 - **Saved-view sharing/permissions.** Views are global to the install, not per-user — fine for
   single-user, needs revisiting before any multi-user support.
 - **Auto-layout — done (2026-08-19).** `web/src/graph/autoLayout.ts` runs `dagre` (top-to-bottom

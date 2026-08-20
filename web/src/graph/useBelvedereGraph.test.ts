@@ -499,4 +499,93 @@ describe("useBelvedereGraph", () => {
     expect(result.current.edges.some((e) => e.source === "server-1" && e.target === "gpu-1")).toBe(true);
     expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-1", "gpu-1", "server-1"].sort());
   });
+
+  it("leaveGroup clears the member's stale expandedFrom entry when it was revealed by expanding the group itself", async () => {
+    // Distinct from the test above (which joins via joinGroup, deliberately expandedFrom-less):
+    // a member revealed by *expanding the group* gets normal expandedFrom bookkeeping (that's the
+    // actual collapsible-groups mechanic — see expand()'s doc comment). Without this cleanup,
+    // leaving the group would remove the MEMBER_OF edge but leave the member still tracked as the
+    // group's expandedFrom child, so a later collapse of the group would wrongly sweep it away too.
+    const gpuGroup = group("group-1");
+    const gpu1 = disk("gpu-1");
+    const gpu2 = disk("gpu-2");
+    vi.mocked(api.listAssets).mockResolvedValue([gpuGroup]);
+    vi.mocked(api.listRelationships).mockResolvedValue([]);
+    vi.mocked(api.listMembers).mockImplementation(async (assetId: string) =>
+      assetId === "group-1"
+        ? [
+            { fromId: "gpu-1", kind: "MEMBER_OF", toId: "group-1", properties: {} },
+            { fromId: "gpu-2", kind: "MEMBER_OF", toId: "group-1", properties: {} },
+          ]
+        : [],
+    );
+    vi.mocked(api.getAsset).mockImplementation(async (id: string) => (id === "gpu-1" ? gpu1 : gpu2));
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+    vi.mocked(api.deleteRelationship).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await result.current.expand("group-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["gpu-1", "gpu-2", "group-1"]);
+    });
+
+    // gpu-1 leaves; gpu-2 stays a member (so the group's "expanded" badge is still accurate —
+    // something's still revealed from it).
+    await result.current.leaveGroup(gpu1, gpuGroup);
+    await waitFor(() => {
+      expect(result.current.edges.some((e) => e.source === "gpu-1" && e.target === "group-1")).toBe(false);
+    });
+    expect(result.current.nodes.find((n) => n.id === "group-1")?.data.expanded).toBe(true);
+
+    // Collapsing the group (toggling expand again) removes gpu-2 (still its real expandedFrom
+    // child) but must leave gpu-1 alone — leaveGroup already untracked it, even though it was
+    // originally revealed via this same group's expand.
+    await result.current.expand("group-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["gpu-1", "group-1"]);
+    });
+  });
+
+  it("unhost removes only the HOSTS edge (e.g. un-nesting a group from another group), leaving both nodes and clearing the stale expandedFrom entry", async () => {
+    // The reported gap: a group nested under another group via "+ Add hosted group" is HOSTS-
+    // connected, not MEMBER_OF, so it never showed up in the parent's "Members" list (MEMBER_OF
+    // only) and had no way to be un-nested short of deleting it outright.
+    const drives = group("group-drives");
+    const array = group("group-array");
+    vi.mocked(api.listAssets).mockResolvedValue([drives]);
+    vi.mocked(api.listRelationships).mockImplementation(async (assetId: string) =>
+      assetId === "group-drives"
+        ? [{ fromId: "group-drives", kind: "HOSTS", toId: "group-array", properties: {} }]
+        : [],
+    );
+    vi.mocked(api.getAsset).mockResolvedValue(array);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+    vi.mocked(api.deleteRelationship).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await result.current.expand("group-drives");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-array", "group-drives"]);
+    });
+
+    await result.current.unhost(drives, array);
+
+    expect(api.deleteRelationship).toHaveBeenCalledWith("group-drives", "HOSTS", "group-array");
+    await waitFor(() => {
+      expect(
+        result.current.edges.some((e) => e.source === "group-drives" && e.target === "group-array"),
+      ).toBe(false);
+    });
+    // Un-hosting doesn't delete either node — just the containment edge.
+    expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-array", "group-drives"]);
+
+    // Collapsing Drives afterward must not sweep Array away too — it's no longer actually hosted
+    // by Drives, so it shouldn't be treated as Drives' descendant for collapse purposes anymore.
+    await result.current.expand("group-drives");
+    expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-array", "group-drives"]);
+  });
 });

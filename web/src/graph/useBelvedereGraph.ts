@@ -55,6 +55,23 @@ function descendantsOf(rootId: string, expandedFrom: Map<string, string>): Set<s
   return result;
 }
 
+/**
+ * After removing an expandedFrom entry, a parent node can be left with nothing actually revealed
+ * from it anymore while still showing the "expanded" badge (set together with the entry that just
+ * got removed, but never unset on removal) — misleadingly signaling there's something to collapse.
+ * Clears it only if `parentId` truly has no remaining expandedFrom entries pointing to it, so
+ * removing one of several children/members doesn't wrongly clear a badge that's still accurate.
+ */
+function withExpandedBadgeClearedIfEmpty(
+  nodes: AssetNodeType[],
+  expandedFrom: Map<string, string>,
+  parentId: string,
+): AssetNodeType[] {
+  const stillHasEntries = [...expandedFrom.values()].includes(parentId);
+  if (stillHasEntries) return nodes;
+  return nodes.map((n) => (n.id === parentId ? { ...n, data: { ...n.data, expanded: false } } : n));
+}
+
 export function useBelvedereGraph() {
   const [state, setState] = useState<GraphState>(initialState);
   // Refs, not state: read-through caches for toNode/resolveType, not something the UI renders
@@ -428,14 +445,44 @@ export function useBelvedereGraph() {
    * edge, never either node: unlike a HOSTS child, a member usually still belongs on the canvas
    * for other reasons (it's still HOSTS-connected to its real parent, or the group may have other
    * members still worth seeing), so there's no safe general rule for auto-hiding it. Takes bare
-   * ids, not full Assets — unlike `joinGroup`, nothing here ever needs to place a new node.
+   * ids, not full Assets — unlike `joinGroup`, nothing here ever needs to place a new node. Also
+   * drops the member's `expandedFrom` entry if it pointed at this exact group — a member revealed
+   * by *expanding the group* (incoming-MEMBER_OF targets get normal expandedFrom bookkeeping, see
+   * `expand()`) would otherwise still get swept away by a later collapse of that group, even
+   * though it's no longer actually a member.
    */
   const leaveGroup = useCallback(async (member: { id: string }, group: { id: string }) => {
     await api.deleteRelationship(member.id, "MEMBER_OF", group.id);
     // Reuses toEdge's own id format rather than rebuilding the template by hand, so the two can't
     // silently drift apart if that format ever changes.
     const edgeId = toEdge({ fromId: member.id, kind: "MEMBER_OF", toId: group.id, properties: {} }).id;
-    setState((prev) => ({ ...prev, edges: prev.edges.filter((e) => e.id !== edgeId) }));
+    setState((prev) => {
+      const expandedFrom = new Map(prev.expandedFrom);
+      if (expandedFrom.get(member.id) === group.id) expandedFrom.delete(member.id);
+      const nodes = withExpandedBadgeClearedIfEmpty(prev.nodes, expandedFrom, group.id);
+      return { ...prev, nodes, edges: prev.edges.filter((e) => e.id !== edgeId), expandedFrom };
+    });
+  }, []);
+
+  /**
+   * Removes a HOSTS relationship — e.g. un-nesting a group that was HOSTS-connected under another
+   * group via "+ Add hosted group" (the only way a group ever ends up *inside* another one, since
+   * that button always creates HOSTS, not MEMBER_OF — a group's own "Members" list only shows
+   * MEMBER_OF, so a HOSTS-nested child group never appeared there and had no way to be removed).
+   * Like `leaveGroup`, only ever removes the one edge, never either node or anything it hosts —
+   * un-hosting doesn't imply deleting. Also drops the child's `expandedFrom` entry if it pointed
+   * at this exact parent, since collapsing that parent later shouldn't hide a node it no longer
+   * actually hosts.
+   */
+  const unhost = useCallback(async (parent: { id: string }, child: { id: string }) => {
+    await api.deleteRelationship(parent.id, "HOSTS", child.id);
+    const edgeId = toEdge({ fromId: parent.id, kind: "HOSTS", toId: child.id, properties: {} }).id;
+    setState((prev) => {
+      const expandedFrom = new Map(prev.expandedFrom);
+      if (expandedFrom.get(child.id) === parent.id) expandedFrom.delete(child.id);
+      const nodes = withExpandedBadgeClearedIfEmpty(prev.nodes, expandedFrom, parent.id);
+      return { ...prev, nodes, edges: prev.edges.filter((e) => e.id !== edgeId), expandedFrom };
+    });
   }, []);
 
   const loadView = useCallback(
@@ -484,6 +531,7 @@ export function useBelvedereGraph() {
     attachHostedChild,
     joinGroup,
     leaveGroup,
+    unhost,
     arrange,
   };
 }

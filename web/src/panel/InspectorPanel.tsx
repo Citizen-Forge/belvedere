@@ -10,6 +10,7 @@ export interface InspectorPanelProps {
   onAddHostedGroup: (parent: { id: string; name: string }) => void;
   onJoinGroup: (member: Asset, group: Asset) => Promise<void>;
   onLeaveGroup: (member: { id: string }, group: { id: string }) => Promise<void>;
+  onUnhost: (parent: { id: string }, child: { id: string }) => Promise<void>;
 }
 
 /**
@@ -216,6 +217,75 @@ function GroupMembers({
   );
 }
 
+/**
+ * Lists this group's HOSTS children, each removable — the only way a group ever ends up *inside*
+ * another one is via "+ Add hosted group" above (which always creates HOSTS, matching "+ Add
+ * hosted asset"'s semantics, not MEMBER_OF), so a nested child group never showed up in "Members"
+ * (MEMBER_OF only) and had no way to be un-nested short of deleting it outright. Scoped to groups
+ * only, same as "Members" — an ordinary asset's HOSTS children are better managed via canvas
+ * expand/collapse, and can run into the dozens (e.g. a server with many components), which would
+ * clutter this panel far more than it would help.
+ */
+function HostedChildren({
+  parent,
+  onRemove,
+}: {
+  parent: Asset;
+  onRemove: (child: { id: string }) => Promise<void>;
+}) {
+  const [childIds, setChildIds] = useState<string[]>([]);
+  const [childrenById, setChildrenById] = useState<Map<string, Asset>>(new Map());
+
+  useEffect(() => {
+    let cancelled = false;
+    api.listRelationships(parent.id).then(async (rels) => {
+      const ids = rels.filter((r) => r.kind === "HOSTS").map((r) => r.toId);
+      if (cancelled) return;
+      // childIds (from listRelationships, the source of truth) is set immediately, before the
+      // per-id getAsset resolution below settles — same reasoning as GroupMembers: a child whose
+      // asset record fails to resolve (e.g. deleted concurrently) still shows as its raw id and
+      // stays removable, rather than silently vanishing from the list with no way to clean up the
+      // dangling relationship.
+      setChildIds(ids);
+      const assets = await Promise.all(ids.map((id) => api.getAsset(id).catch(() => null)));
+      if (cancelled) return;
+      setChildrenById(new Map(assets.filter((a): a is Asset => a !== null).map((a) => [a.id, a])));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [parent.id]);
+
+  if (childIds.length === 0) return null;
+
+  return (
+    <div className="inspector-panel__hosted">
+      <h3>Hosted</h3>
+      <ul className="inspector-panel__group-list">
+        {childIds.map((id) => (
+          <li key={id}>
+            <span>{childrenById.get(id)?.name ?? id}</span>
+            <button
+              className="inspector-panel__remove"
+              aria-label="Remove from hosted items"
+              onClick={async () => {
+                try {
+                  await onRemove({ id });
+                  setChildIds((prev) => prev.filter((c) => c !== id));
+                } catch (cause) {
+                  window.alert(`Could not un-host: ${(cause as Error).message}`);
+                }
+              }}
+            >
+              ×
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function InspectorPanel({
   node,
   onClose,
@@ -223,6 +293,7 @@ export function InspectorPanel({
   onAddHostedGroup,
   onJoinGroup,
   onLeaveGroup,
+  onUnhost,
 }: InspectorPanelProps) {
   if (!node) {
     return (
@@ -301,6 +372,7 @@ export function InspectorPanel({
           onRemove={(member) => onLeaveGroup(member, asset)}
         />
       )}
+      {isGroup && <HostedChildren parent={asset} onRemove={(child) => onUnhost(asset, child)} />}
     </aside>
   );
 }

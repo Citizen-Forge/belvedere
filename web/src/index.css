@@ -272,7 +272,8 @@ input, select {
 }
 
 .inspector-panel__groups,
-.inspector-panel__members {
+.inspector-panel__members,
+.inspector-panel__hosted {
   margin-top: 16px;
 }
 
