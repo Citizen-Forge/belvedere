@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyNodeChanges, type Edge, type NodeChange } from "@xyflow/react";
 import { api } from "../api/client";
-import type { Asset, Relationship, ResolvedType, SavedView } from "../api/types";
+import { GROUP_TYPE_ID, type Asset, type Relationship, type ResolvedType, type SavedView } from "../api/types";
 import type { AssetNodeType } from "./AssetNode";
 import { autoLayout } from "./autoLayout";
 import { childPosition } from "./layout";
@@ -53,6 +53,85 @@ function descendantsOf(rootId: string, expandedFrom: Map<string, string>): Set<s
     }
   }
   return result;
+}
+
+/**
+ * Finds HOSTS children (of the given set) that are redundantly represented by a *nested* group,
+ * not just a direct sibling group — a chain of HOSTS edges through group-typed nodes only (a
+ * group's HOSTS group child, that group's own HOSTS group child, and so on). A child is "grouped
+ * away" if it's MEMBER_OF *any* group anywhere in that whole nested chain, not only a group one
+ * level down: e.g. `unraid -HOSTS-> "Disks" -HOSTS-> "Array" `, with `disk3` a direct HOSTS child
+ * of `unraid` (ground truth — it's really plugged into unraid) that's separately `MEMBER_OF
+ * "Array"`, two HOSTS-hops below `unraid`. `disk3` must stay hidden from `unraid`'s own expansion
+ * (since "Array" already represents it, transitively via "Disks"), and from `expand("Disks")` too
+ * (still not the group actually holding it) — only `expand("Array")` should reveal it. The
+ * traversal stops at the first non-group HOSTS child down any branch, so it never chains through
+ * ordinary hardware/software (only literal group-in-group nesting counts). Best-effort: any fetch
+ * failure degrades to "nothing hidden" rather than failing the whole expand — this is a display
+ * refinement, not something worth a broken double-click over.
+ */
+async function findGroupedAwayIds(hostsChildIds: string[]): Promise<Set<string>> {
+  try {
+    // Populated as groups are discovered, so a group's relationships (fetched once here to find
+    // its own HOSTS children) don't need re-fetching for the final MEMBER_OF check below.
+    const relCache = new Map<string, Relationship[]>();
+    const fetchRels = async (id: string): Promise<Relationship[]> => {
+      const rels = await api.listRelationships(id);
+      relCache.set(id, rels);
+      return rels;
+    };
+
+    const reachableGroupIds = new Set<string>();
+    let frontier = hostsChildIds;
+    while (frontier.length > 0) {
+      const candidates = await Promise.all(frontier.map((id) => api.getAsset(id).catch(() => null)));
+      const groupsAtThisLevel = frontier.filter((_id, i) => candidates[i]?.typeId === GROUP_TYPE_ID);
+      if (groupsAtThisLevel.length === 0) break;
+      for (const id of groupsAtThisLevel) reachableGroupIds.add(id);
+
+      const childRelLists = await Promise.all(groupsAtThisLevel.map((id) => fetchRels(id)));
+      frontier = [
+        ...new Set(childRelLists.flatMap((rels) => rels.filter((r) => r.kind === "HOSTS").map((r) => r.toId))),
+      ].filter((id) => !reachableGroupIds.has(id));
+    }
+
+    if (reachableGroupIds.size === 0) return new Set();
+
+    const directChildRelLists = await Promise.all(hostsChildIds.map((id) => relCache.get(id) ?? fetchRels(id)));
+    return new Set(
+      hostsChildIds.filter((_id, i) =>
+        directChildRelLists[i].some((r) => r.kind === "MEMBER_OF" && reachableGroupIds.has(r.toId)),
+      ),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Shared core of `collapse()` and `deleteAsset()`: computes everything `expandedFrom`-descended
+ * from `rootId` (via `descendantsOf`) and returns nodes/edges/expandedFrom with all of it gone.
+ * `includeRoot` controls whether `rootId` itself is removed too (`deleteAsset`, which really
+ * deletes it) or just marked un-expanded and left in place (`collapse`, which only ever hides,
+ * never deletes anything).
+ */
+function pruneDescendants(
+  prev: GraphState,
+  rootId: string,
+  includeRoot: boolean,
+): Pick<GraphState, "nodes" | "edges" | "expandedFrom"> {
+  const toRemove = descendantsOf(rootId, prev.expandedFrom);
+  if (includeRoot) toRemove.add(rootId);
+
+  const expandedFrom = new Map(prev.expandedFrom);
+  for (const id of toRemove) expandedFrom.delete(id);
+
+  const nodes = prev.nodes
+    .filter((n) => !toRemove.has(n.id))
+    .map((n) => (!includeRoot && n.id === rootId ? { ...n, data: { ...n.data, expanded: false } } : n));
+  const edges = prev.edges.filter((e) => !toRemove.has(e.source) && !toRemove.has(e.target));
+
+  return { nodes, edges, expandedFrom };
 }
 
 /**
@@ -199,20 +278,7 @@ export function useBelvedereGraph() {
   }, []);
 
   const collapse = useCallback((assetId: string) => {
-    setState((prev) => {
-      const toRemove = descendantsOf(assetId, prev.expandedFrom);
-      const expandedFrom = new Map(prev.expandedFrom);
-      for (const id of toRemove) expandedFrom.delete(id);
-
-      return {
-        ...prev,
-        nodes: prev.nodes
-          .filter((n) => !toRemove.has(n.id))
-          .map((n) => (n.id === assetId ? { ...n, data: { ...n.data, expanded: false } } : n)),
-        edges: prev.edges.filter((e) => !toRemove.has(e.target) && !toRemove.has(e.source)),
-        expandedFrom,
-      };
-    });
+    setState((prev) => ({ ...prev, ...pruneDescendants(prev, assetId, false) }));
   }, []);
 
   const expand = useCallback(
@@ -234,30 +300,13 @@ export function useBelvedereGraph() {
       const outgoingRelsPromise = api.listRelationships(assetId);
       const memberRelsPromise = api.listMembers(assetId);
 
-      // A HOSTS child that's *also* MEMBER_OF one of this same parent's other HOSTS children
-      // (almost always a group, e.g. "Disks") is represented by that sibling instead of shown
-      // directly — expanding the parent should reveal the group only, not the group *and* the
-      // child redundantly. The child is still reachable by expanding the group itself (that's the
-      // memberRels/incoming-MEMBER_OF branch above, on whatever node the group is). Scoped to
-      // *direct* siblings under this exact parent, not any group anywhere the child happens to be
-      // tagged into — a free-floating cross-cutting group (no HOSTS parent here) must not hide
-      // anything, since it isn't what's representing the child in this view.
+      // A HOSTS child that's redundantly represented by a (possibly nested) group is excluded from
+      // the reveal entirely — see findGroupedAwayIds's own doc comment for the exact scenario.
+      // Still reachable by expanding the actual group that represents it (that's the
+      // memberRels/incoming-MEMBER_OF branch above, on whatever node that group is).
       const groupedAwayIdsPromise = outgoingRelsPromise.then((outgoingRelsRaw) => {
         const hostsChildIds = [...new Set(outgoingRelsRaw.filter((r) => r.kind === "HOSTS").map((r) => r.toId))];
-        const hostsChildIdSet = new Set(hostsChildIds);
-        // Best-effort: a failure here (network blip on one of N concurrent requests) degrades to
-        // "show everything, no redundancy hiding" rather than aborting the whole expand — the
-        // dedup is a display refinement, not something worth failing a double-click over.
-        return Promise.all(hostsChildIds.map((childId) => api.listRelationships(childId)))
-          .then(
-            (childRelLists) =>
-              new Set(
-                hostsChildIds.filter((_childId, i) =>
-                  childRelLists[i].some((r) => r.kind === "MEMBER_OF" && hostsChildIdSet.has(r.toId)),
-                ),
-              ),
-          )
-          .catch(() => new Set<string>());
+        return findGroupedAwayIds(hostsChildIds);
       });
 
       const [outgoingRelsRaw, memberRels, groupedAwayIds] = await Promise.all([
@@ -283,6 +332,13 @@ export function useBelvedereGraph() {
       const typeByAssetId = new Map(targetAssets.map((asset, i) => [asset.id, targetTypes[i]]));
 
       setState((prev) => {
+        // assetId itself may have been deleted while these awaits were in flight (e.g. the user
+        // double-clicked to expand it, then selected it and hit Delete before the fetch settled)
+        // — attaching newly-fetched children/edges to a parent that's no longer on the canvas
+        // would resurrect orphan nodes connected to nothing, so bail out entirely rather than
+        // partially applying a reveal for a node that doesn't exist anymore.
+        if (!prev.nodes.some((n) => n.id === assetId)) return prev;
+
         const existingNodeIds = new Set(prev.nodes.map((n) => n.id));
         const existingEdgeIds = new Set(prev.edges.map((e) => e.id));
 
@@ -343,6 +399,13 @@ export function useBelvedereGraph() {
       const type = await resolveType(asset.typeId);
 
       setState((prev) => {
+        // The parent may have been deleted (or otherwise removed) while resolveType was in
+        // flight — same race expand() guards against for the same reason: attaching a child to a
+        // parent that's no longer on the canvas would leave an edge pointing at a nonexistent
+        // node. Reads the *current* parent node from prev, not the stale outer `parentNode`
+        // closure, so its position reflects anything that happened (e.g. a drag) during the await too.
+        const currentParent = prev.nodes.find((n) => n.id === parentId);
+        if (!currentParent) return prev;
         if (prev.nodes.some((n) => n.id === asset.id)) return prev;
 
         // Position among this parent's existing children specifically, not the total node
@@ -353,7 +416,7 @@ export function useBelvedereGraph() {
         const newNode: AssetNodeType = {
           id: asset.id,
           type: "asset",
-          position: childPosition(parentNode.position, siblingCount),
+          position: childPosition(currentParent.position, siblingCount),
           data: { asset, type, expanded: false },
         };
         const newEdge: Edge = {
@@ -485,6 +548,44 @@ export function useBelvedereGraph() {
     });
   }, []);
 
+  /**
+   * Permanently deletes an asset (`DETACH DELETE` on the backend — the node and every relationship
+   * touching it, in both directions). Anything that survives (a HOSTS child, a fellow group member)
+   * keeps existing as real data, just loses that one connection — same as `unhost`/`leaveGroup`,
+   * deleting a container never cascades into deleting what it contained. On the canvas, though, the
+   * deleted node's own `expandedFrom` descendants (things only ever visible *because* this node
+   * revealed them) are removed too, via `pruneDescendants` (the same helper `collapse()` uses,
+   * with `includeRoot: true` since this one really does delete the root) — they're not deleted
+   * server-side, just no longer shown floating with no context; a reload or a different path to
+   * them (another HOSTS parent, a saved view) still surfaces them normally. Clears
+   * `selectedAssetId` if the deleted node (or one of its removed descendants) was selected, so the
+   * inspector panel closes itself rather than pointing at a node that no longer exists in `nodes`.
+   */
+  const deleteAsset = useCallback(async (assetId: string) => {
+    await api.deleteAsset(assetId);
+    setState((prev) => {
+      // The deleted node's own former parent (if any) may now have nothing left revealed from it
+      // — every *other* parent/child relationship touched by this deletion is entirely within
+      // what pruneDescendants removes (descendantsOf only ever walks forward from assetId), so
+      // this is the one node outside the removed set whose "expanded" badge could go stale, same
+      // class of fix as unhost/leaveGroup.
+      const formerParentId = prev.expandedFrom.get(assetId);
+      const pruned = pruneDescendants(prev, assetId, true);
+      const nodes = formerParentId
+        ? withExpandedBadgeClearedIfEmpty(pruned.nodes, pruned.expandedFrom, formerParentId)
+        : pruned.nodes;
+      return {
+        ...prev,
+        ...pruned,
+        nodes,
+        selectedAssetId:
+          prev.selectedAssetId && !nodes.some((n) => n.id === prev.selectedAssetId)
+            ? null
+            : prev.selectedAssetId,
+      };
+    });
+  }, []);
+
   const loadView = useCallback(
     async (viewId: string) => {
       setState((prev) => ({ ...prev, loading: true, error: null }));
@@ -532,6 +633,7 @@ export function useBelvedereGraph() {
     joinGroup,
     leaveGroup,
     unhost,
+    deleteAsset,
     arrange,
   };
 }

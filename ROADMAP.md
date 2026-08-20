@@ -99,6 +99,35 @@ inspector, shown only for groups (same scoping as "Members" — an ordinary asse
 are better managed via canvas expand/collapse and can run into the dozens, which would clutter this
 panel far more than help).
 
+**Extended (2026-08-20): grouped-away hiding now sees through nested groups, not just one level.**
+Real gap hit live, same day as the fix above: `unraid -HOSTS-> "Disks" -HOSTS-> "Array"`, with
+`disk3` a direct `HOSTS` child of `unraid` (ground truth — really plugged into it) that's `MEMBER_OF
+"Array"`, two `HOSTS`-hops below `unraid`. The original single-level check (added 2026-08-19) only
+looked at *direct* sibling groups, so `disk3` still leaked through both `expand("unraid")` *and*
+`expand("Disks")` — it should only ever appear when `expand("Array")` is called, since "Array" is
+what actually represents it. `findGroupedAwayIds` (`useBelvedereGraph.ts`) now BFS's through `HOSTS`
+edges into group-typed nodes only, building the full set of groups reachable from the expanded node
+via a chain of nested-group `HOSTS` edges, then hides any direct `HOSTS` child that's `MEMBER_OF`
+*any* group anywhere in that set. Verified against the real live scenario end-to-end (expand
+unraid → shows only Disks; expand Disks → shows only Array; expand Array → finally shows disk3).
+
+**Added (2026-08-20): delete an asset entirely.** No UI anywhere ever called the `deleteAsset` API
+client method that already existed — the only way to remove something was `unhost`/`leaveGroup`
+(sever one connection) or going around the app entirely via the raw API/MCP. Added a "Delete"
+button to the inspector's new "danger zone" (bottom of the panel, visually separated, red-bordered),
+`window.confirm`-gated, calling the backend's `DETACH DELETE` (removes the node and every
+relationship touching it — anything that survives, like a former `HOSTS` child or fellow group
+member, keeps existing as real data, just loses that one connection, same non-cascading philosophy
+as `unhost`/`leaveGroup`). On the canvas, deleting a node also removes its own `expandedFrom`
+descendants (things only ever visible because it revealed them) via a new shared
+`pruneDescendants` helper — extracted from `collapse()`'s and this new logic's otherwise
+near-duplicate removal code once both existed side by side. Works for any asset, not just groups,
+though a group was the reported motivating case. Code review caught two related races opened up by
+introducing a first "the selected node might vanish out from under an in-flight async action" case:
+`expand()` didn't check its target was still on the canvas before attaching newly-fetched children
+to it, and `attachHostedChild` (the "+ Add hosted asset" flow) had the identical gap — both fixed
+with the same "re-check against live state, bail if gone" guard.
+
 ## Custom attributes, live external data, and alerting — not started, design captured 2026-08-20
 
 The original project brief mentioned "status monitoring" with no further scope. The user has now

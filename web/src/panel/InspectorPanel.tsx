@@ -11,6 +11,7 @@ export interface InspectorPanelProps {
   onJoinGroup: (member: Asset, group: Asset) => Promise<void>;
   onLeaveGroup: (member: { id: string }, group: { id: string }) => Promise<void>;
   onUnhost: (parent: { id: string }, child: { id: string }) => Promise<void>;
+  onDelete: (asset: { id: string }) => Promise<void>;
 }
 
 /**
@@ -294,6 +295,7 @@ export function InspectorPanel({
   onJoinGroup,
   onLeaveGroup,
   onUnhost,
+  onDelete,
 }: InspectorPanelProps) {
   if (!node) {
     return (
@@ -309,6 +311,19 @@ export function InspectorPanel({
   // still a group for this purpose. Falls back to the exact match if the type couldn't be
   // resolved at all (no ancestry to check).
   const isGroup = asset.typeId === GROUP_TYPE_ID || (type?.ancestry.includes(GROUP_TYPE_ID) ?? false);
+
+  const handleDelete = async () => {
+    const confirmed = window.confirm(
+      `Delete "${asset.name}"? This can't be undone. Anything it hosts or that's tagged into it ` +
+        `keeps existing — it just loses that connection.`,
+    );
+    if (!confirmed) return;
+    try {
+      await onDelete({ id: asset.id });
+    } catch (cause) {
+      window.alert(`Could not delete "${asset.name}": ${(cause as Error).message}`);
+    }
+  };
 
   return (
     <aside className="inspector-panel">
@@ -373,6 +388,12 @@ export function InspectorPanel({
         />
       )}
       {isGroup && <HostedChildren parent={asset} onRemove={(child) => onUnhost(asset, child)} />}
+
+      <div className="inspector-panel__danger-zone">
+        <button className="inspector-panel__delete" onClick={handleDelete}>
+          Delete {type?.name.toLowerCase() ?? "asset"}
+        </button>
+      </div>
     </aside>
   );
 }

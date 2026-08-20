@@ -311,6 +311,24 @@ input, select {
   min-width: 0;
 }
 
+.inspector-panel__danger-zone {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.inspector-panel__delete {
+  width: 100%;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.inspector-panel__delete:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}
+
 /* Create-asset dialog */
 
 .dialog-backdrop {

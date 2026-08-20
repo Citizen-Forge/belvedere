@@ -57,6 +57,7 @@ export default function App() {
           onJoinGroup={(member, group) => graph.joinGroup(member, group)}
           onLeaveGroup={(member, group) => graph.leaveGroup(member, group)}
           onUnhost={(parent, child) => graph.unhost(parent, child)}
+          onDelete={(asset) => graph.deleteAsset(asset.id)}
         />
       </main>
 

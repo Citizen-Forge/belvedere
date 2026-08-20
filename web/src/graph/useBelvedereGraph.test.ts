@@ -12,6 +12,7 @@ vi.mock("../api/client", () => ({
     getType: vi.fn(),
     createRelationship: vi.fn(),
     deleteRelationship: vi.fn(),
+    deleteAsset: vi.fn(),
   },
 }));
 
@@ -332,6 +333,78 @@ describe("useBelvedereGraph", () => {
     });
   });
 
+  it("expand() hides a HOSTS child that's MEMBER_OF a *nested* group, not just a direct sibling group", async () => {
+    // Extends the test above: unraid -HOSTS-> "Disks" -HOSTS-> "Array" (a group nested inside
+    // another group), and disk3 is a direct HOSTS child of unraid (ground truth — it's really
+    // plugged into unraid) that's separately MEMBER_OF "Array", two HOSTS-hops below unraid.
+    // disk3 must stay hidden from BOTH expand("unraid") and expand("Disks") — "Array" is what
+    // actually represents it; only expand("Array") should reveal it.
+    const unraid = server;
+    const disksGroup = group("group-disks");
+    const arrayGroup = group("group-array");
+    const disk3 = disk("disk-3");
+
+    vi.mocked(api.listAssets).mockResolvedValue([unraid]);
+    vi.mocked(api.listRelationships).mockImplementation(async (assetId: string) => {
+      if (assetId === "server-1") {
+        return [
+          { fromId: "server-1", kind: "HOSTS", toId: "group-disks", properties: {} },
+          { fromId: "server-1", kind: "HOSTS", toId: "disk-3", properties: {} },
+        ];
+      }
+      if (assetId === "group-disks") {
+        return [{ fromId: "group-disks", kind: "HOSTS", toId: "group-array", properties: {} }];
+      }
+      if (assetId === "disk-3") {
+        return [{ fromId: "disk-3", kind: "MEMBER_OF", toId: "group-array", properties: {} }];
+      }
+      return [];
+    });
+    vi.mocked(api.listMembers).mockImplementation(async (assetId: string) =>
+      assetId === "group-array"
+        ? [{ fromId: "disk-3", kind: "MEMBER_OF", toId: "group-array", properties: {} }]
+        : [],
+    );
+    vi.mocked(api.getAsset).mockImplementation(async (id: string) => {
+      if (id === "group-disks") return disksGroup;
+      if (id === "group-array") return arrayGroup;
+      return disk3;
+    });
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Expanding unraid shows only "Disks" — disk3 is hidden even though it's unraid's own direct
+    // HOSTS child, because it's transitively represented by "Array" nested under "Disks".
+    await result.current.expand("server-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-disks", "server-1"]);
+    });
+
+    // Expanding "Disks" reveals "Array" (its own HOSTS child) but still not disk3 — "Disks" isn't
+    // what disk3 is actually a member of.
+    await result.current.expand("group-disks");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual([
+        "group-array",
+        "group-disks",
+        "server-1",
+      ]);
+    });
+
+    // Only expanding "Array" itself reveals disk3.
+    await result.current.expand("group-array");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual([
+        "disk-3",
+        "group-array",
+        "group-disks",
+        "server-1",
+      ]);
+    });
+  });
+
   it("collapsing a node that revealed a group via its own outgoing MEMBER_OF tag does not delete that group or its already-revealed members", async () => {
     // Regression test: expand() used to record expandedFrom for *every* newly-revealed node
     // regardless of relationship kind. A NAS tagged MEMBER_OF a "Storage" group would reveal that
@@ -587,5 +660,50 @@ describe("useBelvedereGraph", () => {
     // by Drives, so it shouldn't be treated as Drives' descendant for collapse purposes anymore.
     await result.current.expand("group-drives");
     expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-array", "group-drives"]);
+  });
+
+  it("deleteAsset removes the node, every edge touching it, and its expandedFrom descendants — but not anything else", async () => {
+    const drives = group("group-drives");
+    const array = group("group-array");
+    const unrelated = disk("disk-unrelated");
+    vi.mocked(api.listAssets).mockResolvedValue([drives, unrelated]);
+    vi.mocked(api.listRelationships).mockImplementation(async (assetId: string) =>
+      assetId === "group-drives"
+        ? [{ fromId: "group-drives", kind: "HOSTS", toId: "group-array", properties: {} }]
+        : [],
+    );
+    vi.mocked(api.getAsset).mockResolvedValue(array);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+    vi.mocked(api.deleteAsset).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["disk-unrelated", "group-drives"]);
+
+    // Expand Drives (revealing Array, a real expandedFrom descendant) and select it.
+    await result.current.expand("group-drives");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual([
+        "disk-unrelated",
+        "group-array",
+        "group-drives",
+      ]);
+    });
+    result.current.select("group-drives");
+    await waitFor(() => expect(result.current.selectedAssetId).toBe("group-drives"));
+
+    await result.current.deleteAsset("group-drives");
+
+    expect(api.deleteAsset).toHaveBeenCalledWith("group-drives");
+    await waitFor(() => {
+      // Drives and its only-ever-visible-via-Drives child (Array) are both gone; the unrelated
+      // top-level disk is untouched.
+      expect(result.current.nodes.map((n) => n.id)).toEqual(["disk-unrelated"]);
+    });
+    expect(result.current.edges.some((e) => e.source === "group-drives" || e.target === "group-drives")).toBe(
+      false,
+    );
+    // The inspector panel closes itself — the deleted node can no longer be the selection.
+    expect(result.current.selectedAssetId).toBeNull();
   });
 });
