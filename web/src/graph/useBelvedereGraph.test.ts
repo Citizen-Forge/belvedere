@@ -11,6 +11,7 @@ vi.mock("../api/client", () => ({
     getAsset: vi.fn(),
     getType: vi.fn(),
     createRelationship: vi.fn(),
+    deleteRelationship: vi.fn(),
   },
 }));
 
@@ -257,6 +258,80 @@ describe("useBelvedereGraph", () => {
     expect(result.current.edges.some((e) => e.source === "gpu-1" && e.target === "group-1")).toBe(true);
   });
 
+  it("expand() hides a HOSTS child that's MEMBER_OF a sibling group under the same parent, showing only the group", async () => {
+    // The exact scenario reported: unraid HOSTS a "Disks" group AND HOSTS disk3/parity directly
+    // (ground truth, unchanged) — but disk3/parity are *also* MEMBER_OF that same "Disks" group.
+    // Expanding unraid should surface only the group (plus any loose disk not in any group), not
+    // the group *and* the grouped disks redundantly. The grouped disks are still reachable by
+    // separately expanding the group itself.
+    const unraid = server;
+    const disksGroup = group("group-disks");
+    const disk3 = disk("disk-3");
+    const parity = disk("disk-parity");
+    const looseDisk = disk("disk-loose");
+
+    vi.mocked(api.listAssets).mockResolvedValue([unraid]);
+    vi.mocked(api.listRelationships).mockImplementation(async (assetId: string) => {
+      if (assetId === "server-1") {
+        return [
+          { fromId: "server-1", kind: "HOSTS", toId: "group-disks", properties: {} },
+          { fromId: "server-1", kind: "HOSTS", toId: "disk-3", properties: {} },
+          { fromId: "server-1", kind: "HOSTS", toId: "disk-parity", properties: {} },
+          { fromId: "server-1", kind: "HOSTS", toId: "disk-loose", properties: {} },
+        ];
+      }
+      if (assetId === "disk-3" || assetId === "disk-parity") {
+        return [{ fromId: assetId, kind: "MEMBER_OF", toId: "group-disks", properties: {} }];
+      }
+      return [];
+    });
+    vi.mocked(api.listMembers).mockResolvedValue([]);
+    vi.mocked(api.getAsset).mockImplementation(async (id: string) => {
+      if (id === "group-disks") return disksGroup;
+      if (id === "disk-3") return disk3;
+      if (id === "disk-parity") return parity;
+      return looseDisk;
+    });
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await result.current.expand("server-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual([
+        "disk-loose",
+        "group-disks",
+        "server-1",
+      ]);
+    });
+    // No direct edge from unraid to either grouped disk — the group is what represents them here.
+    expect(result.current.edges.some((e) => e.source === "server-1" && e.target === "disk-3")).toBe(false);
+    expect(
+      result.current.edges.some((e) => e.source === "server-1" && e.target === "disk-parity"),
+    ).toBe(false);
+
+    // Expanding the group itself still reveals the grouped disks (via their MEMBER_OF tag).
+    vi.mocked(api.listMembers).mockImplementation(async (assetId: string) =>
+      assetId === "group-disks"
+        ? [
+            { fromId: "disk-3", kind: "MEMBER_OF", toId: "group-disks", properties: {} },
+            { fromId: "disk-parity", kind: "MEMBER_OF", toId: "group-disks", properties: {} },
+          ]
+        : [],
+    );
+    await result.current.expand("group-disks");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual([
+        "disk-3",
+        "disk-loose",
+        "disk-parity",
+        "group-disks",
+        "server-1",
+      ]);
+    });
+  });
+
   it("collapsing a node that revealed a group via its own outgoing MEMBER_OF tag does not delete that group or its already-revealed members", async () => {
     // Regression test: expand() used to record expandedFrom for *every* newly-revealed node
     // regardless of relationship kind. A NAS tagged MEMBER_OF a "Storage" group would reveal that
@@ -382,5 +457,46 @@ describe("useBelvedereGraph", () => {
     expect(
       result.current.edges.some((e) => e.source === "hidden-disk-1" && e.target === "group-1"),
     ).toBe(true);
+  });
+
+  it("leaveGroup removes only the MEMBER_OF edge, leaving both nodes and any other edges untouched", async () => {
+    const gpuGroup = group("group-1");
+    const gpu1 = disk("gpu-1");
+    vi.mocked(api.listAssets).mockResolvedValue([server]);
+    vi.mocked(api.listRelationships).mockImplementation(async (assetId: string) =>
+      assetId === "server-1" ? [{ fromId: "server-1", kind: "HOSTS", toId: "gpu-1", properties: {} }] : [],
+    );
+    vi.mocked(api.getAsset).mockResolvedValue(gpu1);
+    vi.mocked(api.getType).mockImplementation(async (id: string) => resolvedType(id));
+    vi.mocked(api.createRelationship).mockResolvedValue({
+      fromId: "gpu-1",
+      kind: "MEMBER_OF",
+      toId: "group-1",
+      properties: {},
+    });
+    vi.mocked(api.deleteRelationship).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useBelvedereGraph());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Reveal gpu-1 as a real HOSTS child first, then also tag it into the group.
+    await result.current.expand("server-1");
+    await waitFor(() => {
+      expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["gpu-1", "server-1"]);
+    });
+    await result.current.joinGroup(gpu1, gpuGroup);
+    await waitFor(() => {
+      expect(result.current.edges.some((e) => e.source === "gpu-1" && e.target === "group-1")).toBe(true);
+    });
+
+    await result.current.leaveGroup(gpu1, gpuGroup);
+
+    expect(api.deleteRelationship).toHaveBeenCalledWith("gpu-1", "MEMBER_OF", "group-1");
+    await waitFor(() => {
+      expect(result.current.edges.some((e) => e.source === "gpu-1" && e.target === "group-1")).toBe(false);
+    });
+    // The real HOSTS edge/nodes are untouched — leaveGroup never deletes anything but the tag.
+    expect(result.current.edges.some((e) => e.source === "server-1" && e.target === "gpu-1")).toBe(true);
+    expect(result.current.nodes.map((n) => n.id).sort()).toEqual(["group-1", "gpu-1", "server-1"].sort());
   });
 });

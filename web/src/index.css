@@ -279,6 +279,25 @@ input, select {
 .inspector-panel__group-list {
   margin: 0 0 8px;
   padding-left: 18px;
+  list-style: none;
+}
+
+.inspector-panel__group-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.inspector-panel__remove {
+  line-height: 1;
+  padding: 0 6px;
+  opacity: 0.6;
+}
+
+.inspector-panel__remove:hover {
+  opacity: 1;
 }
 
 .inspector-panel__group-picker {

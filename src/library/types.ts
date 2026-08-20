@@ -25,6 +25,16 @@ export interface TypeRecord {
   icon: string | null;
   description: string | null;
   attributes: AttributeDefinition[];
+  /**
+   * Keys of *inherited* attributes to drop from this type's resolved set — e.g. core/group
+   * extends core/hardware (every type must extend one of the three roots) but has no real
+   * manufacturer/model of its own, so it excludes them rather than showing them unset. Propagates
+   * to anything that further extends this type, the same way attributes/icon inherit — a subtype
+   * (at any depth) that wants an excluded key back just redeclares it in its own `attributes`,
+   * which wins over the exclusion as long as it's closer to the resolved type than whichever
+   * ancestor excluded it (see resolveType.ts).
+   */
+  excludeAttributes?: string[];
   version: string;
   sourceId: string; // which configured LibrarySource this record came from
 }

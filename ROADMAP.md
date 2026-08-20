@@ -55,13 +55,37 @@ An asset's HOSTS parent stays untouched — MEMBER_OF is a purely additive tag a
   join an *existing* group — the first UI affordance in Belvedere for connecting two already-created
   assets, as opposed to creating a new hosted child.
 
-`core/group` (unchanged type, still extends `core/hardware` for the same known cosmetic reason as
-before — inherits unused `manufacturer`/`model`) is now the type used on both sides: hosted locally
-under whatever it organizes, or created free-floating for a cross-cutting collection.
+`core/group` is now the type used on both sides: hosted locally under whatever it organizes, or
+created free-floating for a cross-cutting collection.
 
 Verified end-to-end in the real browser UI: server hosting a "GPUs" group and 3 GPUs, one GPU also
 tagged into a free-floating "ALL GPUs" group, the server itself tagged into a free-floating
 "servers" group, and the join-group picker used to add a fresh membership live.
+
+**Fixed (2026-08-20): `core/group` no longer shows unused `manufacturer`/`model`.** Real user
+feedback after actually using groups on the live Unraid graph — a group has neither, and it stuck
+out. Fixed with a new, general type-system primitive rather than a group-specific hack:
+`excludeAttributes` on a `TypeRecord` (`src/library/types.ts`/`schema.ts`/`resolveType.ts`) drops
+named *inherited* attribute keys from a type's resolved set, propagating to anything that further
+extends it (same as icon/attributes already do) unless a descendant explicitly redeclares that key.
+`core/group` now declares `excludeAttributes: [manufacturer, model]` and adds its own freeform
+`notes` string attribute. Also added a "Layer" display fix to the same request: a group is tracked
+internally as `physical` layer (that's what makes a free-floating group with no `HOSTS` parent show
+up in the top-level overview at all — `loadOverview()` only ever queries physical-layer assets, see
+`ARCHITECTURE.md`), but showing "Layer: physical" to the user on something that's purely
+organizational was actively misleading, not just unhelpful clutter — `InspectorPanel.tsx` now hides
+that row for anything that's a `core/group` (or extends it, ancestry-aware) rather than changing the
+underlying layer (which would silently break free-floating group visibility, a load-bearing existing
+feature, instead of fixing a cosmetic display issue).
+
+**Added (2026-08-20): remove an asset from a group.** The join-a-group UI only ever supported
+adding — there was no way to undo it short of deleting the asset entirely. `graph.leaveGroup(member,
+group)` removes one `MEMBER_OF` edge via `DELETE /api/assets/:id/relationships/:kind/:toId` (already
+existed on the backend for other relationship kinds; just needed a `deleteRelationship` client method
+on the frontend, which was missing) and strips exactly that edge from canvas state — never either
+node, since a member usually still belongs on the canvas for other reasons. Wired to a "×" next to
+every entry in both `InspectorPanel`'s "Groups" list (leave a group) and "Members" list (remove a
+member), the two directions `joinGroup` already supported.
 
 ## Other known gaps
 
@@ -100,3 +124,22 @@ tagged into a free-floating "ALL GPUs" group, the server itself tagged into a fr
 - **`routes/libraries.ts` reloads every configured library source on any single add/remove** —
   correct (duplicate-id detection needs the full set) but means one unreachable remote source can
   block mutating an unrelated local one. Revisit if it becomes a real pain point.
+- **`expand()`'s grouped-away-sibling check adds one `listRelationships` call per direct HOSTS
+  child, unconditionally**, even when nothing under that node is grouped at all — noticeable extra
+  latency on a node with many hosted components (the Unraid box's 18-child `unraid` node, or a
+  24-drive NAS). Degrades gracefully on failure (falls back to showing everything, no hiding) but
+  doesn't currently avoid the N calls when it turns out none of them were needed. A bulk backend
+  endpoint ("list relationships for these N ids in one call") would fix this properly; not building
+  it preemptively without a concrete report that it's actually slow in practice.
+- **The "join a group" picker only finds assets whose `typeId` is exactly `core/group`**
+  (`GroupMembership`'s `listAssets({ typeId: GROUP_TYPE_ID })`), unlike `InspectorPanel`'s own
+  `isGroup` check, which is ancestry-aware. No subtype of `core/group` exists yet, so this hasn't
+  mattered in practice — would need either a backend query that can filter "is-a" rather than
+  exact-type, or fetching+resolving every asset's type client-side to check ancestry (expensive).
+  Revisit if/when a group subtype actually gets created.
+- **`excludeAttributes` has no migration path for an asset's already-stored `attributeValues`.**
+  Not a problem *today* — there's no asset-update endpoint at all yet (create/read/delete only), so
+  nothing ever re-validates an existing asset's attribute values against its current resolved type.
+  Would become one the moment an "edit attributes" feature is built: an asset created before a key
+  was excluded (or set out-of-band) would fail that validation on its first edit until the stale
+  key is stripped. Worth handling when that feature is actually designed, not before.

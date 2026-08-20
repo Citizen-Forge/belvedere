@@ -211,10 +211,47 @@ export function useBelvedereGraph() {
       // PROVIDES/CONNECTS_TO peers, and its own "part of" MEMBER_OF tags), plus — since membership
       // is stored on the member, not the group — whoever has tagged themselves as a MEMBER_OF
       // *this* asset (relevant when expanding a group: that's how its members get revealed).
-      const [outgoingRels, memberRels] = await Promise.all([
-        api.listRelationships(assetId),
-        api.listMembers(assetId),
+      // Kicked off as separate promises, not an immediate `await Promise.all`, so the per-child
+      // fan-out below (which only needs outgoingRelsRaw) can start the moment *that* resolves
+      // instead of also waiting on memberRels' unrelated latency.
+      const outgoingRelsPromise = api.listRelationships(assetId);
+      const memberRelsPromise = api.listMembers(assetId);
+
+      // A HOSTS child that's *also* MEMBER_OF one of this same parent's other HOSTS children
+      // (almost always a group, e.g. "Disks") is represented by that sibling instead of shown
+      // directly — expanding the parent should reveal the group only, not the group *and* the
+      // child redundantly. The child is still reachable by expanding the group itself (that's the
+      // memberRels/incoming-MEMBER_OF branch above, on whatever node the group is). Scoped to
+      // *direct* siblings under this exact parent, not any group anywhere the child happens to be
+      // tagged into — a free-floating cross-cutting group (no HOSTS parent here) must not hide
+      // anything, since it isn't what's representing the child in this view.
+      const groupedAwayIdsPromise = outgoingRelsPromise.then((outgoingRelsRaw) => {
+        const hostsChildIds = [...new Set(outgoingRelsRaw.filter((r) => r.kind === "HOSTS").map((r) => r.toId))];
+        const hostsChildIdSet = new Set(hostsChildIds);
+        // Best-effort: a failure here (network blip on one of N concurrent requests) degrades to
+        // "show everything, no redundancy hiding" rather than aborting the whole expand — the
+        // dedup is a display refinement, not something worth failing a double-click over.
+        return Promise.all(hostsChildIds.map((childId) => api.listRelationships(childId)))
+          .then(
+            (childRelLists) =>
+              new Set(
+                hostsChildIds.filter((_childId, i) =>
+                  childRelLists[i].some((r) => r.kind === "MEMBER_OF" && hostsChildIdSet.has(r.toId)),
+                ),
+              ),
+          )
+          .catch(() => new Set<string>());
+      });
+
+      const [outgoingRelsRaw, memberRels, groupedAwayIds] = await Promise.all([
+        outgoingRelsPromise,
+        memberRelsPromise,
+        groupedAwayIdsPromise,
       ]);
+      const outgoingRels = outgoingRelsRaw.filter(
+        (r) => !(r.kind === "HOSTS" && groupedAwayIds.has(r.toId)),
+      );
+
       const rels = [...outgoingRels, ...memberRels];
       // Fetch every target's asset + resolved type up front, including ones that turn out to
       // already be on the canvas — which of them are actually "new" is decided inside the setState
@@ -386,6 +423,21 @@ export function useBelvedereGraph() {
     [resolveType],
   );
 
+  /**
+   * Removes an existing MEMBER_OF tag — the reverse of `joinGroup`. Only ever removes the one
+   * edge, never either node: unlike a HOSTS child, a member usually still belongs on the canvas
+   * for other reasons (it's still HOSTS-connected to its real parent, or the group may have other
+   * members still worth seeing), so there's no safe general rule for auto-hiding it. Takes bare
+   * ids, not full Assets — unlike `joinGroup`, nothing here ever needs to place a new node.
+   */
+  const leaveGroup = useCallback(async (member: { id: string }, group: { id: string }) => {
+    await api.deleteRelationship(member.id, "MEMBER_OF", group.id);
+    // Reuses toEdge's own id format rather than rebuilding the template by hand, so the two can't
+    // silently drift apart if that format ever changes.
+    const edgeId = toEdge({ fromId: member.id, kind: "MEMBER_OF", toId: group.id, properties: {} }).id;
+    setState((prev) => ({ ...prev, edges: prev.edges.filter((e) => e.id !== edgeId) }));
+  }, []);
+
   const loadView = useCallback(
     async (viewId: string) => {
       setState((prev) => ({ ...prev, loading: true, error: null }));
@@ -431,6 +483,7 @@ export function useBelvedereGraph() {
     saveView,
     attachHostedChild,
     joinGroup,
+    leaveGroup,
     arrange,
   };
 }

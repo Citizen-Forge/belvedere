@@ -63,6 +63,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, toId, properties }),
     }),
+  deleteRelationship: (fromId: string, kind: RelationshipKind, toId: string) =>
+    request<void>(`/api/assets/${fromId}/relationships/${kind}/${toId}`, { method: "DELETE" }),
 
   listViews: () => request<SavedView[]>("/api/views"),
   getView: (id: string) => request<SavedView>(`/api/views/${id}`),

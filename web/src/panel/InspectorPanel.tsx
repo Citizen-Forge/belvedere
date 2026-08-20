@@ -9,19 +9,23 @@ export interface InspectorPanelProps {
   onAddHostedChild: (parent: { id: string; name: string }) => void;
   onAddHostedGroup: (parent: { id: string; name: string }) => void;
   onJoinGroup: (member: Asset, group: Asset) => Promise<void>;
+  onLeaveGroup: (member: { id: string }, group: { id: string }) => Promise<void>;
 }
 
 /**
- * "Part of groups": lists the asset's existing MEMBER_OF tags and offers a picker to add this
- * asset to another existing group. Kept separate from HOSTS ("+ Add hosted asset"/"+ Add hosted
- * group" above) — joining a group tags an *existing* asset without touching its real HOSTS parent.
+ * "Part of groups": lists the asset's existing MEMBER_OF tags (each removable) and offers a
+ * picker to add this asset to another existing group. Kept separate from HOSTS ("+ Add hosted
+ * asset"/"+ Add hosted group" above) — joining/leaving a group tags/untags an *existing* asset
+ * without touching its real HOSTS parent.
  */
 function GroupMembership({
   asset,
   onJoin,
+  onLeave,
 }: {
   asset: Asset;
   onJoin: (group: Asset) => Promise<void>;
+  onLeave: (group: { id: string }) => Promise<void>;
 }) {
   const [groups, setGroups] = useState<Asset[]>([]);
   const [memberships, setMemberships] = useState<Relationship[]>([]);
@@ -53,7 +57,23 @@ function GroupMembership({
       {memberships.length > 0 ? (
         <ul className="inspector-panel__group-list">
           {memberships.map((m) => (
-            <li key={m.toId}>{groups.find((g) => g.id === m.toId)?.name ?? m.toId}</li>
+            <li key={m.toId}>
+              <span>{groups.find((g) => g.id === m.toId)?.name ?? m.toId}</span>
+              <button
+                className="inspector-panel__remove"
+                aria-label="Remove from group"
+                onClick={async () => {
+                  try {
+                    await onLeave({ id: m.toId });
+                    setMemberships((prev) => prev.filter((mem) => mem.toId !== m.toId));
+                  } catch (cause) {
+                    window.alert(`Could not remove from group: ${(cause as Error).message}`);
+                  }
+                }}
+              >
+                ×
+              </button>
+            </li>
           ))}
         </ul>
       ) : (
@@ -96,14 +116,17 @@ function GroupMembership({
 /**
  * The reverse direction of GroupMembership, shown only when the selected asset is itself a
  * group: pulls an *existing* asset in as a member (MEMBER_OF this group), rather than requiring
- * the user to go select that other asset and use its own "+ Add to group" picker instead.
+ * the user to go select that other asset and use its own "+ Add to group" picker instead. Each
+ * member is individually removable, the same as GroupMembership's list above.
  */
 function GroupMembers({
   group,
   onAdd,
+  onRemove,
 }: {
   group: Asset;
   onAdd: (member: Asset) => Promise<void>;
+  onRemove: (member: { id: string }) => Promise<void>;
 }) {
   const [candidates, setCandidates] = useState<Asset[]>([]);
   const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
@@ -136,7 +159,27 @@ function GroupMembers({
               (e.g. deleted since) would otherwise be silently dropped instead of just unnamed,
               same fallback GroupMembership uses above for the reverse listing. */}
           {[...memberIds].map((id) => (
-            <li key={id}>{candidatesById.get(id)?.name ?? id}</li>
+            <li key={id}>
+              <span>{candidatesById.get(id)?.name ?? id}</span>
+              <button
+                className="inspector-panel__remove"
+                aria-label="Remove member"
+                onClick={async () => {
+                  try {
+                    await onRemove({ id });
+                    setMemberIds((prev) => {
+                      const next = new Set(prev);
+                      next.delete(id);
+                      return next;
+                    });
+                  } catch (cause) {
+                    window.alert(`Could not remove member: ${(cause as Error).message}`);
+                  }
+                }}
+              >
+                ×
+              </button>
+            </li>
           ))}
         </ul>
       ) : (
@@ -179,6 +222,7 @@ export function InspectorPanel({
   onAddHostedChild,
   onAddHostedGroup,
   onJoinGroup,
+  onLeaveGroup,
 }: InspectorPanelProps) {
   if (!node) {
     return (
@@ -189,7 +233,11 @@ export function InspectorPanel({
   }
 
   const { asset, type } = node.data;
-  const isGroup = asset.typeId === GROUP_TYPE_ID;
+  // Ancestry-aware, not just an exact typeId match — a hypothetical type that extends core/group
+  // (the same kind of subtyping excludeAttributes itself supports, e.g. a "branded group") is
+  // still a group for this purpose. Falls back to the exact match if the type couldn't be
+  // resolved at all (no ancestry to check).
+  const isGroup = asset.typeId === GROUP_TYPE_ID || (type?.ancestry.includes(GROUP_TYPE_ID) ?? false);
 
   return (
     <aside className="inspector-panel">
@@ -202,8 +250,17 @@ export function InspectorPanel({
       <dl className="inspector-panel__meta">
         <dt>Type</dt>
         <dd>{type?.name ?? asset.typeId}</dd>
-        <dt>Layer</dt>
-        <dd>{asset.layer}</dd>
+        {/* A group is purely organizational, not meaningfully physical or logical — it's still
+            internally tracked as physical layer (see ARCHITECTURE.md: that's what lets a
+            free-floating group with no HOSTS parent show up in the top-level overview at all,
+            the same way any other physical root asset does), but showing that internal detail
+            to the user here would be actively misleading, not just unhelpful. */}
+        {!isGroup && (
+          <>
+            <dt>Layer</dt>
+            <dd>{asset.layer}</dd>
+          </>
+        )}
       </dl>
 
       <h3>Attributes</h3>
@@ -232,8 +289,18 @@ export function InspectorPanel({
         <button onClick={() => onAddHostedGroup({ id: asset.id, name: asset.name })}>+ Add hosted group</button>
       </div>
 
-      <GroupMembership asset={asset} onJoin={(group) => onJoinGroup(asset, group)} />
-      {isGroup && <GroupMembers group={asset} onAdd={(member) => onJoinGroup(member, asset)} />}
+      <GroupMembership
+        asset={asset}
+        onJoin={(group) => onJoinGroup(asset, group)}
+        onLeave={(group) => onLeaveGroup(asset, group)}
+      />
+      {isGroup && (
+        <GroupMembers
+          group={asset}
+          onAdd={(member) => onJoinGroup(member, asset)}
+          onRemove={(member) => onLeaveGroup(member, asset)}
+        />
+      )}
     </aside>
   );
 }

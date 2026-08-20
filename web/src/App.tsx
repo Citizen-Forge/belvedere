@@ -55,6 +55,7 @@ export default function App() {
             })
           }
           onJoinGroup={(member, group) => graph.joinGroup(member, group)}
+          onLeaveGroup={(member, group) => graph.leaveGroup(member, group)}
         />
       </main>
 

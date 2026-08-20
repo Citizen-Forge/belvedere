@@ -24,6 +24,7 @@ export const typeFileSchema = z.object({
   description: z.string().nullable().default(null),
   version: z.string().min(1),
   attributes: z.array(attributeSchema).default([]),
+  excludeAttributes: z.array(z.string()).optional(),
 });
 
 export type TypeFileInput = z.infer<typeof typeFileSchema>;
